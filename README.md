@@ -4,25 +4,25 @@
 
 # wlanmon
 
-wlanmon überwacht WLAN-Qualität und -Erreichbarkeit an mehreren Standorten.
-Kleine Linux-Geräte (NanoPi, Raspberry Pi) scannen periodisch die WLAN-Umgebung
-und testen Verbindungen zu konfigurierten SSIDs (Verbindungsaufbau, DHCP,
-Erreichbarkeit, optional iperf3). Die Ergebnisse landen in einem zentralen
-Web-Dashboard mit Verlauf, Spektrumansicht und Alarmierung.
+wlanmon monitors Wi-Fi quality and availability across multiple sites. Small
+Linux devices (NanoPi, Raspberry Pi) periodically scan the Wi-Fi environment
+and test connections to configured SSIDs (association, DHCP, reachability,
+optionally iperf3). The results end up in a central web dashboard with
+history, spectrum view and alerting.
 
-| Ordner | Inhalt |
+| Folder | Contents |
 |---|---|
-| [`probe/`](probe/) | Probe-Client (Python) für die Messgeräte, inkl. Setup-Skript und Auto-Update – siehe [probe/README.md](probe/README.md) |
-| [`dashboard/`](dashboard/) | Server und Web-Dashboard (PHP + MySQL/MariaDB), klassisch oder als Docker-Stack – siehe [dashboard/README.md](dashboard/README.md) |
-| [`branding/`](branding/) | Logo und Icon (SVG) |
+| [`probe/`](probe/) | Probe client (Python) for the measurement devices, including setup script and auto-update – see [probe/README.md](probe/README.md) |
+| [`dashboard/`](dashboard/) | Server and web dashboard (PHP + MySQL/MariaDB), classic or as a Docker stack – see [dashboard/README.md](dashboard/README.md) |
+| [`branding/`](branding/) | Logo and icon (SVG) |
 
-## Schnellstart
+## Quick start
 
-1. Dashboard aufsetzen – am einfachsten als Docker-Stack, siehe
-   [dashboard/README.md, Abschnitt „Docker“](dashboard/README.md#docker).
-2. Im Dashboard ein Gerät anlegen; es liefert die fertige `server`-Konfiguration
-   samt API-Key für die Probe.
-3. Probe einrichten:
+1. Set up the dashboard – easiest as a Docker stack, see
+   [dashboard/README.md, section "Docker"](dashboard/README.md#docker).
+2. Add a device in the dashboard; it gives you the ready-made `server`
+   configuration including the API key for the probe.
+3. Set up the probe:
 
    ```bash
    git clone https://github.com/dgawin/wlanmon.git ~/wlanmon
@@ -30,16 +30,16 @@ Web-Dashboard mit Verlauf, Spektrumansicht und Alarmierung.
    sudo ./setup_wlanmon_probe.sh
    ```
 
-   Details (Hardware, WLAN-Adapter, Konfiguration) in
+   Details (hardware, Wi-Fi adapters, configuration) in
    [probe/README.md](probe/README.md).
 
 ## Branches
 
-- `main` – aktueller Entwicklungsstand
-- `stable` – freigegebener Stand; die Auto-Updates von Probe und Dashboard
-  ziehen standardmäßig von hier
+- `main` – current development state
+- `stable` – released state; the auto-updates of probe and dashboard pull from
+  here by default
 
-## Lizenz
+## License
 
-MIT – siehe [LICENSE](LICENSE). Name und Logo „wlanmon“ sind von der Lizenz
-nicht umfasst.
+MIT – see [LICENSE](LICENSE). The name and logo "wlanmon" are not covered by
+the license.

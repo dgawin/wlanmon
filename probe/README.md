@@ -1,84 +1,79 @@
-# WLANMON-Probe – Client
+# WLANMON Probe – Client
 
-Scannt WLAN-Netze und führt periodische Verbindungstests gegen konfigurierte
-SSIDs durch. Ergebnisse werden lokal gepuffert (SQLite) und per HTTPS an
-einen zentralen Server übertragen.
+Scans Wi-Fi networks and runs periodic connection tests against configured
+SSIDs. Results are buffered locally (SQLite) and sent to a central server
+over HTTPS.
 
-Ehemals "wlanpi-probe" auf Basis des WLANPi-Images – läuft jetzt auf einem
-eigenen, schlanken Armbian-Image für den NanoPi NEO2 ohne die
-WLANPi-eigene Netzwerk-/UI-Tooling (siehe
-[`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh)), da einzelne
-WLANPi-Dienste (v.a. `ifplugd` mit `wlan0` im Hotplug-Modus) nachweislich
-mit der direkten `wpa_supplicant`/`iw`-Steuerung hier kollidiert haben.
+Formerly "wlanpi-probe" based on the WLANPi image – now runs on a custom,
+lean Armbian image for the NanoPi NEO2 without the WLANPi network/UI tooling
+(see [`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh)), because individual
+WLANPi services (especially `ifplugd` with `wlan0` in hotplug mode)
+demonstrably clashed with the direct `wpa_supplicant`/`iw` control used here.
 
-## Voraussetzungen
+## Requirements
 
-- Debian/Armbian-basiertes System auf dem NanoPi NEO2 (kein WLANPi-Image nötig)
-- USB-WLAN-Stick (z. B. Comfast CF-953AX, Treiber `mt7921u`, Kernel ≥ 5.19)
-- Root-Rechte (für `iw`, `wpa_supplicant`, `dhclient`)
-- Pakete: `iw`, `wpasupplicant`, `isc-dhcp-client` (oder `dhcpcd5`), `iputils-ping`,
-  `python3-venv`, optional `iperf3`. `_run_dhcp()` in `wifi_ops.py` bevorzugt
-  `dhclient`, faellt automatisch auf `dhcpcd` zurueck, falls `dhclient` nicht
-  im PATH liegt (`shutil.which()`) - `_cleanup_connection()` spiegelt dieselbe
-  Wahl, damit zum Freigeben der Lease immer der tatsaechlich benutzte Client
-  aufgerufen wird (`dhclient -r` bzw. `dhcpcd -k`).
+- Debian/Armbian-based system on the NanoPi NEO2 (no WLANPi image needed)
+- USB Wi-Fi adapter (e.g. Comfast CF-953AX, driver `mt7921u`, kernel ≥ 5.19)
+- Root privileges (for `iw`, `wpa_supplicant`, `dhclient`)
+- Packages: `iw`, `wpasupplicant`, `isc-dhcp-client` (or `dhcpcd5`), `iputils-ping`,
+  `python3-venv`, optionally `iperf3`. `_run_dhcp()` in `wifi_ops.py` prefers
+  `dhclient` and automatically falls back to `dhcpcd` if `dhclient` is not
+  on the PATH (`shutil.which()`) – `_cleanup_connection()` mirrors the same
+  choice, so the lease is always released by the client that was actually
+  used (`dhclient -r` or `dhcpcd -k`).
 
-  **Bekannte DHCP-Eigenheiten, live auf mehreren Geraeten beobachtet und
-  inzwischen abgefedert:**
-  - `dhclient` versucht bei einer im Lease-File gespeicherten alten Lease
-    per "INIT-REBOOT" (direktes DHCPREQUEST statt frischem DISCOVER)
-    diese wiederzuverwenden - nach einem AP-Wechsel (Roaming auf
-    dieselbe SSID, andere BSSID) fuehrte das zuverlaessig zu einem
-    DHCP-Timeout (Dashboard-Historie: ein Geraet lief sauber verbunden,
-    scheiterte direkt nach dem naechsten Roaming-Event). `_run_dhcp()`
-    nutzt deshalb ein eigenes, vor jedem Versuch geleertes Lease-File
-    (`-lf`) statt des System-Lease-Files, damit jeder Connection-Test
-    tatsaechlich mit einem frischen DISCOVER startet - `-r` beim
-    Aufraeumen zeigt bewusst auf dieselbe Datei.
-  - `dhcpcd` weicht ohne `-L`/`--noipv4ll` nach ein paar Sekunden ohne
-    DHCP-Antwort auf eine selbst vergebene IPv4LL-Adresse (169.254.x.x,
-    RFC 3927 "Zeroconf") aus und `_run_dhcp()` haette das faelschlich
-    als Erfolg gewertet (live beobachtet: `connected=True` mit
-    `ip=169.254.x.x`, der anschliessende iperf3-Test lief dann prompt in
-    einen Timeout, weil 169.254.x.x nicht ins eigentliche Netz routen
-    kann) - zusaetzlich zu `-L` prueft `_run_dhcp()` das auch explizit
-    gegen den Praefix, falls eine IPv4LL-Adresse doch auf anderem Weg
-    zustande kommt.
-  - **Raspberry Pi 3 und 5 (Raspberry Pi OS / Debian Trixie): `dhclient`
-    deinstallieren.** Mit `isc-dhcp-client` (`dhclient 4.4.3`) scheiterten
-    Connection-Tests dort konsequent mit `DHCPDECLINE` direkt nach dem
-    `DHCPACK` (die frisch zugewiesene IP wird sofort wieder abgelehnt),
-    teils auch mit "Network is down" waehrend der DHCP-Phase - auch bei
-    ruhigem Netz und starkem Signal, mit dem internen WLAN-Chip genauso wie
-    mit USB-Sticks. Ohne `dhclient` weicht die Probe automatisch auf
-    `dhcpcd` aus (siehe oben) und laeuft sauber:
+  **Known DHCP quirks, observed live on several devices and now mitigated:**
+  - With an old lease stored in the lease file, `dhclient` tries to reuse it
+    via "INIT-REBOOT" (a direct DHCPREQUEST instead of a fresh DISCOVER) –
+    after an AP change (roaming to the same SSID, different BSSID) this
+    reliably led to a DHCP timeout (dashboard history: a device ran cleanly
+    connected and failed right after the next roaming event). `_run_dhcp()`
+    therefore uses its own lease file (`-lf`), emptied before every attempt,
+    instead of the system lease file, so every connection test really starts
+    with a fresh DISCOVER – `-r` during cleanup deliberately points to the
+    same file.
+  - Without `-L`/`--noipv4ll`, `dhcpcd` falls back to a self-assigned IPv4LL
+    address (169.254.x.x, RFC 3927 "Zeroconf") after a few seconds without a
+    DHCP answer, and `_run_dhcp()` would have wrongly counted that as a
+    success (observed live: `connected=True` with `ip=169.254.x.x`; the
+    following iperf3 test promptly timed out, because 169.254.x.x cannot
+    route into the actual network) – in addition to `-L`, `_run_dhcp()` also
+    checks explicitly against the prefix, in case an IPv4LL address comes
+    about some other way.
+  - **Raspberry Pi 3 and 5 (Raspberry Pi OS / Debian Trixie): uninstall
+    `dhclient`.** With `isc-dhcp-client` (`dhclient 4.4.3`), connection tests
+    there consistently failed with `DHCPDECLINE` right after the `DHCPACK`
+    (the freshly assigned IP is rejected immediately), sometimes also with
+    "Network is down" during the DHCP phase – even on a quiet network with a
+    strong signal, with the internal Wi-Fi chip just as with USB adapters.
+    Without `dhclient`, the probe automatically falls back to `dhcpcd` (see
+    above) and runs cleanly:
 
     ```bash
     sudo apt remove -y isc-dhcp-client
     sudo systemctl restart wlanmon-probe
     ```
 
-    Auf den NanoPi-Geraeten (Armbian) laeuft `dhclient` dagegen fehlerfrei.
-    Die eigentliche Ursache des `DHCPDECLINE` auf den Raspberry-Pi-Images
-    ist nicht geklaert (bekannt ist nur: `dhclient` lehnt ab, `dhcpcd` im
-    selben Netz nicht) - bei einem neuen Raspberry Pi also direkt nach der
-    Installation entfernen, statt erst auf die Fehlschlaege zu warten.
-    Nicht mit einem anderen, davon unabhaengigen Fehlerbild verwechseln:
-    "Failed to allocate an IPv4 address" im Kea-Log von pfSense bedeutet
-    einen zu kleinen DHCP-Pool (dort den Adressbereich vergroessern), nicht
-    diesen `dhclient`-Effekt.
+    On the NanoPi devices (Armbian), on the other hand, `dhclient` works
+    flawlessly. The actual cause of the `DHCPDECLINE` on the Raspberry Pi
+    images is unknown (all that is known: `dhclient` declines, `dhcpcd` on
+    the same network does not) – so on a new Raspberry Pi remove it right
+    after installation instead of waiting for the failures. Do not confuse
+    this with a different, unrelated symptom: "Failed to allocate an IPv4
+    address" in pfSense's Kea log means the DHCP pool is too small (enlarge
+    the address range there), not this `dhclient` effect.
 - Python ≥ 3.10
 
 ## Installation
 
-Automatisiert (empfohlen, siehe [`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh)
-für Details und Voraussetzungen):
+Automated (recommended, see [`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh)
+for details and prerequisites):
 
 ```bash
 sudo ./setup_wlanmon_probe.sh
 ```
 
-Manuell:
+Manually:
 
 ```bash
 sudo mkdir -p /opt/wlanmon-probe /etc/wlanmon-probe /var/lib/wlanmon-probe /var/log/wlanmon-probe
@@ -87,14 +82,14 @@ sudo cp main.py wifi_ops.py sender.py queue_store.py config_manager.py \
 sudo mkdir -p /opt/wlanmon-probe/portals
 sudo cp portals/*.py /opt/wlanmon-probe/portals/
 
-# Eigenes venv statt system-weitem pip install - moderne Debian/Ubuntu-
-# Versionen (PEP 668, "externally-managed-environment") verweigern
-# sonst die Installation.
+# A dedicated venv instead of a system-wide pip install - recent
+# Debian/Ubuntu versions (PEP 668, "externally-managed-environment")
+# refuse the installation otherwise.
 sudo python3 -m venv /opt/wlanmon-probe/venv
 sudo /opt/wlanmon-probe/venv/bin/pip install -r /opt/wlanmon-probe/requirements.txt
 
 sudo cp config.example.yaml /etc/wlanmon-probe/config.yaml
-sudo nano /etc/wlanmon-probe/config.yaml   # Interface, Server-URL, API-Key, Ziel-SSIDs anpassen
+sudo nano /etc/wlanmon-probe/config.yaml   # adjust interface, server URL, API key, target SSIDs
 
 sudo cp wlanmon-probe.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -102,90 +97,88 @@ sudo systemctl enable --now wlanmon-probe
 sudo journalctl -u wlanmon-probe -f
 ```
 
-## Werkzeugkasten (`sudo wlanmon`)
+## Toolbox (`sudo wlanmon`)
 
-Menü für die Befehle, die man auf einer Probe immer wieder braucht (Oberfläche
-auf Englisch):
+A menu for the commands you keep needing on a probe:
 
-- **Status:** Version (installiert/Checkout), Branch, Dienste, letzter Update-Lauf,
-  WLAN-Interface/MAC/Land, IP-Adressen, noch nicht gesendete Messungen
-- **Logs:** Probe-Log live oder die letzten Zeilen, nur Warnungen/Fehler,
-  Connection-Test-Ergebnisse, Updater- und Watchdog-Log
-- **Dienste:** Probe neu starten/stoppen/starten, Status aller Dienste und Timer
-- **Update:** jetzt ausführen, letzter Stand, Version und Git-Stand vergleichen,
-  Reparatur mit dem `update_probe.py` aus dem Checkout (falls die installierte Kopie
-  defekt ist)
-- **WLAN-Diagnose:** Adapter, Ländereinstellung, Bänder/Kanäle, Scan als Tabelle
-  (alle Netze, 2,4 GHz aktiv/passiv), SSID suchen, Kanalbelegung, `diagnose_wifi.sh`
-- **Konfiguration:** config.yaml anzeigen (Schlüssel maskiert) und bearbeiten (mit
-  YAML-Prüfung und Neustart), zentrale Konfiguration vom Dashboard (Passwörter maskiert)
-- **Netzwerk/Server:** Adressen/Routen, Server erreichbar, Warteschlange, Uhrzeit/NTP
-- **System:** Speicher/Temperatur, Neustart, Herunterfahren
+- **Status:** version (installed/checkout), branch, services, last update run,
+  Wi-Fi interface/MAC/country, IP addresses, measurements not yet sent
+- **Logs:** probe log live or the last lines, warnings/errors only,
+  connection test results, updater and watchdog log
+- **Services:** restart/stop/start the probe, status of all services and timers
+- **Update:** run now, last result, compare version and Git state, repair
+  with the `update_probe.py` from the checkout (in case the installed copy is
+  broken)
+- **Wi-Fi diagnostics:** adapter, country setting, bands/channels, scan as a
+  table (all networks, 2.4 GHz active/passive), search for an SSID, channel
+  occupancy, `diagnose_wifi.sh`
+- **Configuration:** show config.yaml (keys masked) and edit it (with YAML
+  validation and restart), central configuration from the dashboard
+  (passwords masked)
+- **Network/server:** addresses/routes, server reachable, queue, time/NTP
+- **System:** memory/temperature, reboot, shutdown
 
-Direkt ohne Menü: `sudo wlanmon status`, `log` (live), `update-log`, `restart`,
-`update`, `help`.
+Directly, without the menu: `sudo wlanmon status`, `log` (live), `update-log`,
+`restart`, `update`, `help`.
 
-Das Tool liegt im Git-Checkout (`auto_update.repo_dir`) und wird vom Auto-Update
-mit jedem `git pull` aktuell gehalten. `setup_wlanmon_probe.sh` richtet den Befehl
-`wlanmon` ein; auf schon installierten Geräten reicht ein erster Aufruf aus dem
-Checkout, der den Befehl selbst anlegt:
+The tool lives in the Git checkout (`auto_update.repo_dir`) and is kept up to
+date by the auto-update with every `git pull`. `setup_wlanmon_probe.sh` sets up
+the `wlanmon` command; on devices that are already installed, a first call from
+the checkout is enough, and it creates the command itself:
 
 ```bash
-cd <repo_dir>          # z.B. ~/wlanmon/probe, siehe auto_update.repo_dir
+cd <repo_dir>          # e.g. ~/wlanmon/probe, see auto_update.repo_dir
 sudo ./wlanmon-tool.sh
 ```
 
-## Interface identifizieren
+## Identifying the interface
 
-`setup_wlanmon_probe.sh` macht beides automatisch: setzt `net.ifnames=0`
-in `/boot/armbianEnv.txt` (klassische Namen wie `wlan0` statt der
-MAC-basierten Form `wlx<mac>`, wirkt erst nach einem Reboot) und gibt am
-Ende des Laufs die erkannten WLAN-Interfaces aus. Manuell geht's so:
+`setup_wlanmon_probe.sh` does both automatically: it sets `net.ifnames=0` in
+`/boot/armbianEnv.txt` (classic names like `wlan0` instead of the MAC-based
+form `wlx<mac>`, takes effect only after a reboot) and prints the detected
+Wi-Fi interfaces at the end of the run. Manually:
 
 ```bash
 iw dev
-# oder
+# or
 ip link show | grep wl
 ```
 
-Den gefundenen Namen (z. B. `wlan1`) in `config.yaml` unter `interface.name` eintragen.
+Enter the name you found (e.g. `wlan1`) in `config.yaml` under `interface.name`.
 
-**Ländereinstellung:** `interface.country` (Standard `DE`, wenn der Eintrag
-fehlt) legt die Regulatory Domain fest - erlaubte Kanäle und Sendeleistung.
-Ohne Land meldet `iw reg get` "country 00": dann darf der Adapter auf 5 GHz
-nur passiv scannen und auf den Kanälen 12/13 keine Verbindung aufbauen. Die
-Probe setzt das Land beim Start und prüft es vor jedem Scan (`iw reg set`).
-Außerhalb Deutschlands den eigenen Ländercode eintragen (z. B. `"AT"`,
-`"CH"`, `"US"`, in Anführungszeichen); `""` lässt die Systemeinstellung
-unverändert.
+**Country setting:** `interface.country` (default `DE` if the entry is
+missing) sets the regulatory domain – allowed channels and transmit power.
+Without a country, `iw reg get` reports "country 00": the adapter may then only
+scan passively on 5 GHz and cannot connect on channels 12/13. The probe sets
+the country on startup and checks it before every scan (`iw reg set`).
+Outside Germany, enter your own country code (e.g. `"AT"`, `"CH"`, `"US"`, in
+quotes); `""` leaves the system setting unchanged.
 
-## USB-Hotplug-Einschränkung & Watchdog
+## USB hotplug limitation & watchdog
 
-**An echter Hardware reproduziert (NanoPi NEO2 + mt7921u-USB-Adapter):**
-Wird der USB-WLAN-Adapter im laufenden Betrieb gezogen und wieder
-gesteckt, landet er beim Wiedereinstecken manchmal auf dem falschen
-USB-Companion-Controller (OHCI/Full-Speed statt EHCI/High-Speed –
-`dmesg`: `usb X-Y: not running at top speed`). Der Firmware-Upload des
-mt7921u braucht die volle High-Speed-Bandbreite; schlägt er fehl,
-crasht der Treiber (`Failed to get patch semaphore`, `hardware init
-failed`) und der Chip bleibt **auch nach erneutem Stecken tot** – ein
-Unbind/Bind über `/sys/bus/usb/drivers/usb/` bringt ihn in diesem
-Zustand nachweislich nicht zurück, nur ein voller Neustart. Das ist
-eine Einschränkung der Allwinner-H5-USB-Controller beim Hot-Plug
-(EHCI/OHCI-Companion-Aushandlung), kein Software-Fehler.
+**Reproduced on real hardware (NanoPi NEO2 + mt7921u USB adapter):**
+if the USB Wi-Fi adapter is unplugged and plugged back in while running, it
+sometimes ends up on the wrong USB companion controller when replugged
+(OHCI/full speed instead of EHCI/high speed – `dmesg`: `usb X-Y: not running
+at top speed`). The mt7921u firmware upload needs the full high-speed
+bandwidth; if it fails, the driver crashes (`Failed to get patch semaphore`,
+`hardware init failed`) and the chip stays **dead even after replugging** – an
+unbind/bind via `/sys/bus/usb/drivers/usb/` demonstrably does not bring it back
+in this state, only a full reboot does. This is a limitation of the Allwinner
+H5 USB controllers during hotplug (EHCI/OHCI companion negotiation), not a
+software bug.
 
-**Praktische Konsequenz:** Der Adapter sollte beim Booten bereits
-gesteckt sein; Hot-Plug im laufenden Betrieb nach Möglichkeit vermeiden.
+**Practical consequence:** the adapter should already be plugged in at boot;
+avoid hotplugging during operation if possible.
 
-**Für den Fall, dass es trotzdem passiert** (z. B. versehentlich
-gewackelter Stecker im Feld), gibt es `wlan_watchdog.sh` +
-`wlanmon-wifi-watchdog.timer`: prüft alle 2 Minuten, ob
-`interface.name` noch als Netzwerk-Interface existiert, und rebootet
-das Gerät automatisch, wenn es länger als
-`watchdog.missing_threshold_minutes` durchgehend fehlt. Läuft als
-eigener systemd-Timer, unabhängig vom `wlanmon-probe`-Service selbst –
-der Watchdog funktioniert auch, wenn der Hauptprozess hängt. Standardmäßig
-deaktiviert, aktivieren in `config.yaml`:
+**In case it happens anyway** (e.g. a connector accidentally wiggled in the
+field), there is `wlan_watchdog.sh` + `wlanmon-wifi-watchdog.timer`: every
+2 minutes it checks whether `interface.name` still exists as a network
+interface and automatically reboots the device if it has been missing
+continuously for longer than `watchdog.missing_threshold_minutes`. It runs as
+its own systemd timer, independent of the `wlanmon-probe` service itself – the
+watchdog also works if the main process hangs. Disabled by default, enable it
+in `config.yaml`:
 
 ```yaml
 watchdog:
@@ -193,56 +186,55 @@ watchdog:
   missing_threshold_minutes: 10
 ```
 
-`setup_wlanmon_probe.sh` installiert und aktiviert den Timer immer
-(`systemctl enable --now wlanmon-wifi-watchdog.timer`) – der Watchdog
-selbst greift aber erst, wenn `watchdog.enabled: true` gesetzt ist, tut
-bis dahin bei jedem Check-Lauf einfach nichts.
+`setup_wlanmon_probe.sh` always installs and enables the timer
+(`systemctl enable --now wlanmon-wifi-watchdog.timer`) – but the watchdog
+itself only acts once `watchdog.enabled: true` is set; until then each check
+run simply does nothing.
 
-## Automatische Updates aus dem Git-Repo
+## Automatic updates from the Git repo
 
-Optional, standardmäßig aus: `update_probe.py` prüft alle 15 Minuten
-(`wlanmon-probe-update.timer`), ob im lokalen Git-Checkout eine neuere
-Version auf `origin/<branch>` liegt (`git fetch` + `git rev-parse`). Falls
-ja: `git pull --ff-only`, die bekannten Dateien (dieselbe Liste wie in
-`setup_wlanmon_probe.sh`) nach `/opt/wlanmon-probe/` kopieren, `pip
-install -r requirements.txt` (falls sich Abhängigkeiten geändert haben),
-`systemctl restart wlanmon-probe`. Läuft als eigener systemd-Timer,
-unabhängig vom `wlanmon-probe`-Service selbst.
+Optional, off by default: every 15 minutes (`wlanmon-probe-update.timer`),
+`update_probe.py` checks whether a newer version is available on
+`origin/<branch>` in the local Git checkout (`git fetch` + `git rev-parse`).
+If so: `git pull --ff-only`, copy the known files (the same list as in
+`setup_wlanmon_probe.sh`) to `/opt/wlanmon-probe/`, `pip install -r
+requirements.txt` (in case dependencies changed), `systemctl restart
+wlanmon-probe`. Runs as its own systemd timer, independent of the
+`wlanmon-probe` service itself.
 
 ```yaml
 auto_update:
   enabled: true
-  repo_dir: "/home/pi/wlanmon/probe"   # lokaler Git-Checkout
+  repo_dir: "/home/pi/wlanmon/probe"   # local Git checkout
   branch: "stable"
 ```
 
-`setup_wlanmon_probe.sh` installiert und aktiviert auch diesen Timer immer
-(`systemctl enable --now wlanmon-probe-update.timer`) und trägt `repo_dir`
-automatisch als das Verzeichnis ein, aus dem das Skript selbst aufgerufen
-wurde – aktiv wird er trotzdem erst mit `auto_update.enabled: true`.
+`setup_wlanmon_probe.sh` also always installs and enables this timer
+(`systemctl enable --now wlanmon-probe-update.timer`) and automatically sets
+`repo_dir` to the directory the script itself was called from – it still only
+becomes active with `auto_update.enabled: true`.
 
-`update_probe.py` steht mit in seiner eigenen `FILES`-Liste, kopiert sich
-bei jedem Lauf also selbst nach `/opt/wlanmon-probe/` – genau die Kopie
-dort führt der systemd-Timer aus (`ExecStart` in
-`wlanmon-probe-update.service`), nicht die im Git-Checkout unter
-`repo_dir`. **Auf Geräten, die schon vor diesem Eintrag liefen, ist genau
-dieser eine Selbstaktualisierungs-Mechanismus per Definition eingefroren**
-(die alte Kopie kennt die neue `FILES`-Liste ja noch nicht) – dort einmalig
-von Hand nachziehen:
+`update_probe.py` is part of its own `FILES` list, so it copies itself to
+`/opt/wlanmon-probe/` on every run – exactly that copy is what the systemd
+timer runs (`ExecStart` in `wlanmon-probe-update.service`), not the one in the
+Git checkout under `repo_dir`. **On devices that were already running before
+this entry existed, precisely this one self-update mechanism is frozen by
+definition** (the old copy does not know the new `FILES` list yet) – update it
+manually once there:
 
 ```bash
 sudo cp /home/pi/wlanmon/probe/update_probe.py /opt/wlanmon-probe/update_probe.py
 ```
 
-(Pfad an `repo_dir` anpassen.) Ab dann läuft die Selbstaktualisierung wie
-bei jeder anderen Datei aus `FILES` mit.
+(Adjust the path to `repo_dir`.) From then on, the self-update works like for
+any other file in `FILES`.
 
-**`stable` statt `main`:** Geräte im Feld ziehen bewusst nicht direkt von
-`main` (dort landet jeder Commit sofort), sondern vom Branch `stable`. Ein
-Commit geht erst live, wenn er bewusst dorthin gemerged wird – nach
-[CI](../.github/workflows/ci.yml) (`php -l`/`py_compile`/`bash -n` auf jeden
-Push, siehe Badge/Checks auf GitHub) und optional einem manuellen Test auf
-einem einzelnen Gerät. Freigeben (Fast-Forward, kein Merge-Commit):
+**`stable` instead of `main`:** devices in the field deliberately do not pull
+directly from `main` (every commit lands there immediately) but from the
+`stable` branch. A commit only goes live once it is deliberately merged there –
+after [CI](../.github/workflows/ci.yml) (`php -l`/`py_compile`/`bash -n` on every
+push, see the badge/checks on GitHub) and optionally a manual test on a single
+device. Releasing (fast-forward, no merge commit):
 
 ```bash
 git fetch origin
@@ -251,30 +243,33 @@ git merge --ff-only origin/main
 git push origin stable
 ```
 
-Schlägt der `--ff-only`-Merge fehl, ist `stable` divergiert (z. B. ein
-Hotfix direkt auf `stable`) – dann erst manuell klären statt zu erzwingen.
-Geräte, die noch `branch: "main"` eingetragen haben, ziehen weiterhin von
-`main`; auf `stable` umstellen durch einmaliges Anpassen von
-`auto_update.branch` in `/etc/wlanmon-probe/config.yaml` (wirkt ab dem
-nächsten Timer-Tick, kein Codeänderung/Neustart-von-Hand nötig).
+If the `--ff-only` merge fails, `stable` has diverged (e.g. a hotfix made
+directly on `stable`) – sort that out manually instead of forcing it. Devices
+that still have `branch: "main"` configured keep pulling from `main`; switch
+them to `stable` by changing `auto_update.branch` in
+`/etc/wlanmon-probe/config.yaml` once (takes effect from the next timer tick,
+no code change or manual restart needed).
 
-Der Checkout unter `repo_dir` gehört meist dem Benutzer, der ihn per
-`git clone` angelegt hat (z. B. `/home/pi/wlanmon/probe`), `update_probe.py`
-läuft aber als `root`. Seit CVE-2022-24765 verweigert `git` in diesem Fall
-standardmäßig jeden Zugriff ("detected dubious ownership in repository
-at …") – `update_probe.py` trägt `repo_dir` deshalb bei jedem Lauf
-automatisch (und idempotent) in `root`s globaler `safe.directory`-Liste
-ein, das ist kein manueller Schritt nötig.
+The checkout under `repo_dir` usually belongs to the user who created it with
+`git clone` (e.g. `/home/pi/wlanmon/probe`), but `update_probe.py` runs as
+`root`. Since CVE-2022-24765, `git` refuses any access in that case by default
+("detected dubious ownership in repository at …") – so on every run
+`update_probe.py` automatically (and idempotently) adds the checkout to
+`root`'s global `safe.directory` list; no manual step needed.
 
-**Bei einem SSH-Deploy-Key statt HTTPS** (z. B. bei einem privaten Repo,
-ein Key pro Gerät) ist ein einmaliger, manueller Schritt nötig: Der Key
-liegt im Home-Verzeichnis des Benutzers, der ihn per `ssh-keygen`
-angelegt hat (z. B. `/home/pi/.ssh/id_ed25519`), `update_probe.py` läuft
-aber als `root` und hat standardmäßig kein eigenes SSH-Setup für GitHub -
-`git fetch` schlägt dann mit `Permission denied (publickey)` fehl. Fix:
-`root` denselben Key referenzieren lassen (er kann die Datei lesen,
-unabhängig von den Zugriffsrechten des Home-Verzeichnisses - root umgeht
-Dateiberechtigungen):
+`repo_dir` may also be a subdirectory of a checkout (e.g. `probe/` in the
+combined wlanmon repo): if `.git` is not in `repo_dir` itself but in a parent
+directory, that is accepted as long as `repo_dir` contains the probe
+(`update_probe.py`).
+
+**With an SSH deploy key instead of HTTPS** (e.g. for a private repo, one key
+per device), a one-time manual step is needed: the key lives in the home
+directory of the user who created it with `ssh-keygen` (e.g.
+`/home/pi/.ssh/id_ed25519`), but `update_probe.py` runs as `root` and has no
+SSH setup of its own for GitHub by default – `git fetch` then fails with
+`Permission denied (publickey)`. Fix: let `root` reference the same key (it can
+read the file regardless of the home directory's permissions – root bypasses
+file permissions):
 
 ```bash
 sudo mkdir -p /root/.ssh && sudo chmod 700 /root/.ssh
@@ -286,109 +281,108 @@ Host github.com
     IdentitiesOnly yes
 EOF
 sudo chmod 600 /root/.ssh/config
-# Host-Key vorab bekannt machen, sonst haengt der erste Verbindungsaufbau
-# im Service ohne Terminal an der interaktiven Bestaetigung:
+# Make the host key known in advance, otherwise the first connection from
+# the service (without a terminal) hangs at the interactive confirmation:
 sudo ssh-keyscan github.com | sudo tee -a /root/.ssh/known_hosts > /dev/null
-sudo ssh -T git@github.com   # erwartet: "Hi <user>/<repo>! ... successfully authenticated"
+sudo ssh -T git@github.com   # expected: "Hi <user>/<repo>! ... successfully authenticated"
 ```
 
-Pfad zum Key vorher mit `ls -la ~/.ssh/` prüfen (Dateiname kann je nach
-Gerät abweichen) - dieser Schritt ist pro Gerät einmalig.
+Check the path to the key beforehand with `ls -la ~/.ssh/` (the file name may
+differ per device) – this step is needed once per device.
 
-**Sicherheitshinweis:** Das führt automatisch aus, was auf `branch` liegt –
-nur aktivieren, wenn dieser Branch tatsächlich nur Freigegebenes enthält
-(kein Test-/Feature-Branch), und wenn der Zugriff auf das GitHub-Konto
-entsprechend abgesichert ist. `git pull --ff-only` verweigert sich bei
-lokalen Änderungen im Checkout statt etwas zu überschreiben; ein
-fehlendes/ungültiges `repo_dir` bricht ebenfalls nur folgenlos ab (Zeile im
-Log: `[update_probe] repo_dir '…' ist kein Git-Checkout …`). Log verfolgen:
+**Security note:** this automatically runs whatever is on `branch` – only
+enable it if that branch really contains released code only (no test/feature
+branch) and if access to the GitHub account is secured accordingly.
+`git pull --ff-only` refuses to run on local changes in the checkout instead of
+overwriting anything; a missing/invalid `repo_dir` also just aborts without
+side effects (log line: `[update_probe] repo_dir '…' ist kein Git-Checkout …`).
+Follow the log:
 
 ```bash
 journalctl -u wlanmon-probe-update -f
 ```
 
-## Funktionsweise
+## How it works
 
-- **Scan-Loop** (`scan.interval_seconds`): führt `iw dev <iface> scan` aus,
-  parst SSID, BSSID, Signalstärke, Frequenz/Kanal sowie – falls der AP ein
-  BSS-Load-Element (QBSS) sendet – die Zahl der assoziierten Clients
-  (`station_count`) und die vom AP gemessene Kanalauslastung
-  (`channel_utilization_pct`, umgerechnet aus `x/255`). Ab 1.0.1.9 außerdem
-  die Fähigkeiten aus den Information Elements: `wifi_generation` (4–7 aus
-  HT/VHT/HE/EHT capabilities, `null` = nur a/b/g), `channel_width_mhz`
-  (VHT/HT operation; VHT auf 2,4 GHz zählt als Wi-Fi 4), ab 1.0.1.11
-  `center_freq_mhz` (Mitte des belegten Kanalblocks für die Spektrumansicht),
-  `security` (z. B. `WPA2/WPA3-Personal`,
-  `WPA3-Enterprise`, `OWE`, `WEP`, `Open`) mit `pmf` (`required`/`optional`)
-  und den rohen `akm`-Suites, sowie Roaming-Unterstützung `rrm_11k`,
-  `neighbor_report`, `btm_11v` (BSS Transition) und `ft_11r` (FT-AKM im
-  RSN). Direkt danach liest
-  `iw dev <iface> survey dump` die Kanalbelegung aus Sicht des eigenen Radios
-  (`channels`: Messdauer, Belegt-Zeit, `busy_pct`, Rauschen je Kanal) – das
-  funktioniert auch bei APs ohne BSS Load. Achtung: mt76-Treiber (z. B.
-  mt7921u) setzen diese Zähler bei jedem Kanalwechsel zurück, beim Scan ist
-  das also nur eine kurze Momentaufnahme (Verweildauer je Kanal, siehe
-  `active_ms`); andere Treiber summieren seit dem Hochfahren des Interfaces.
-  Unterstützt der Treiber `survey dump` nicht, bleibt `channels` leer.
-  Ab 1.0.1.16 misst die Probe zusätzlich im Connection-Test die Belegung des
-  **verbundenen** Kanals (`channel_load`): Zählerstände nach DHCP, nach dem
-  Ping und nach iperf3; `baseline` = Zeitraum DHCP bis Ping-Ende (kaum eigener
-  Verkehr, entspricht der Alltagslast), `iperf3` = während der Durchsatzmessung,
-  jeweils `busy_pct`, eigenes Senden `tx_pct`, Empfang `rx_pct` und der Rest
-  `other_pct` (Nachbarn/Störungen). Zählt der Treiber nicht (0 ms), wechselt
-  der Kanal oder werden die Zähler zurückgesetzt, fehlt der Wert.
-- **Connection-Test-Loop** (`connection_tests.interval_seconds`): verbindet
-  sich nacheinander mit jedem konfigurierten Ziel-SSID
-  (`wpa_supplicant` + `dhclient`), misst Assoziationszeit, DHCP-Zeit,
-  Ping-RTT/-Verlust und optional iperf3-Durchsatz, trennt danach sauber.
-  Direkt vor dem DHCP-Versuch wird Promiscuous-Modus auf dem Interface
-  explizit ausgeschaltet (`ip link set <iface> promisc off`) - manche
-  Treiber (beobachtet: `brcmfmac` auf dem Onboard-WLAN eines Raspberry Pi
-  5) lassen das Interface nach dem vorangegangenen Scan vereinzelt darin
-  stehen, wodurch es waehrend der DHCP-Phase jeden Unicast-Frame in der
-  Luft empfaengt statt nur die eigenen - in einem belebten Netz kann das
-  dhclients Duplicate-Address-Detection faelschlich einen IP-Konflikt
-  vermuten lassen (Symptom: DHCPDECLINE direkt nach DHCPACK, teils auch
-  "Network is down" unter der zusaetzlichen Paketlast). Rein defensiv,
-  greift nicht ein, wenn der Modus ohnehin schon aus ist. Direkt danach
-  wird ausserdem WLAN-Power-Management ausgeschaltet
-  (`iw dev <iface> set power_save off`) - bekanntes Problem bei
-  Broadcom/Cypress-Chips (ebenfalls beobachtet auf dem Pi-5-Onboard-WLAN):
-  periodische Sleep-/Wake-Zyklen im Power-Save (sichtbar in `dmesg` als
-  wiederkehrendes `brcmf_cfg80211_set_power_mgmt: power save enabled`,
-  auch ausserhalb aktiver Tests) koennen mitten in einer DHCP-Anfrage zu
-  Paketverlust oder einem kurzen Verbindungsabbruch fuehren. Ebenfalls
-  rein defensiv.
-  iperf3 steht komplett je Ziel-SSID: `iperf3_enabled: false` schaltet es für
-  diese SSID ab, `iperf3_download` (Standard an) steuert die zusätzliche
-  Download-Messung, und `iperf3_server`/`iperf3_duration_seconds`/`iperf3_port`
-  je Ziel überschreiben bei Bedarf die Standardwerte aus `connection_tests` -
-  nötig, wenn eine SSID in ein anderes VLAN mit eigenem iperf3-Server/-Port
-  führt. Leer bzw. 0 je Ziel = Standardwert aus `connection_tests` verwenden.
-  Ab 1.0.1.13 je SSID `iperf3_bitrate_mbps` (iperf3 `-b`, 0 = unbegrenzt):
-  ein unbegrenzter Test lastet den Kanal für seine Dauer voll aus – genau
-  der Effekt, den ein Speedtest im Alltag verzerrt –, begrenzt prüft er, ob
-  eine definierte Rate stabil erreicht wird. Beginn und Ende der iperf3-Last
-  stehen als `iperf3_started_at`/`iperf3_ended_at` im Ergebnis; das Dashboard
-  markiert diese Zeiträume im Tab „Verlauf“. Ab 1.0.1.14 begrenzt
-  `connection_tests.iperf3_min_interval_minutes` (0 = bei jedem Test) iperf3
-  auf höchstens einen Lauf je SSID in diesem Abstand; die übrigen Tests
-  laufen ohne iperf3 (`iperf3_deferred: true`). Ein per Taste 3 ausgelöster
-  Test misst immer mit. Die Zeitpunkte liegen ab 1.0.1.17 in
-  `iperf3_last_run.json` neben der Queue (`/var/lib/wlanmon-probe/`), damit ein
-  Neustart (Update, neue Remote-Config) den Mindestabstand nicht aushebelt.
-  Ein iperf3-Server bedient nur einen Test gleichzeitig; meldet er
-  „the server is busy running a test“ (z. B. weil eine zweite Probe gerade
-  misst), versucht die Probe es bis zu dreimal im Abstand von Testdauer + 5 s.
-  **iperf3-Server empfohlen mit** `iperf3 -s --idle-timeout=30 --rcv-timeout=10000`
-  (TCP und UDP 5201 freigeben). Die Schreibweise mit `=` ist Absicht: manche
-  NAS-Docker-Oberflächen übergeben `--idle-timeout 30` als *ein* Argument
-  samt Leerzeichen, iperf3 bricht dann mit „unrecognized option“ ab und der
-  Container startet in einer Schleife neu. Bricht ein Client mitten im Test weg, bleibt
-  ein Server ohne diese Optionen gelegentlich dauerhaft auf „busy“ hängen und
-  lehnt jeden weiteren Test ab – live beobachtet, alle LAN-Tests eines
-  Standorts schlugen stundenlang fehl, bis der Server neu gestartet wurde.
-  Als Docker-Compose-Dienst:
+- **Scan loop** (`scan.interval_seconds`): runs `iw dev <iface> scan` and
+  parses SSID, BSSID, signal strength, frequency/channel and – if the AP sends
+  a BSS Load element (QBSS) – the number of associated clients
+  (`station_count`) and the channel utilization measured by the AP
+  (`channel_utilization_pct`, converted from `x/255`). Since 1.0.1.9 also the
+  capabilities from the information elements: `wifi_generation` (4–7 from
+  HT/VHT/HE/EHT capabilities, `null` = a/b/g only), `channel_width_mhz`
+  (VHT/HT operation; VHT on 2.4 GHz counts as Wi-Fi 4), since 1.0.1.11
+  `center_freq_mhz` (center of the occupied channel block for the spectrum
+  view), `security` (e.g. `WPA2/WPA3-Personal`, `WPA3-Enterprise`, `OWE`,
+  `WEP`, `Open`) with `pmf` (`required`/`optional`) and the raw `akm` suites,
+  as well as roaming support `rrm_11k`, `neighbor_report`, `btm_11v` (BSS
+  Transition) and `ft_11r` (FT AKM in the RSN). Right afterwards,
+  `iw dev <iface> survey dump` reads the channel occupancy as seen by the
+  probe's own radio (`channels`: measurement time, busy time, `busy_pct`,
+  noise per channel) – this also works with APs without BSS Load. Note: mt76
+  drivers (e.g. mt7921u) reset these counters on every channel change, so
+  during a scan this is only a short snapshot (dwell time per channel, see
+  `active_ms`); other drivers accumulate since the interface came up. If the
+  driver does not support `survey dump`, `channels` stays empty.
+  Since 1.0.1.16 the probe also measures the occupancy of the **connected**
+  channel during the connection test (`channel_load`): counter readings after
+  DHCP, after the ping and after iperf3; `baseline` = the period from DHCP to
+  the end of the ping (hardly any own traffic, corresponds to the everyday
+  load), `iperf3` = during the throughput measurement, each with `busy_pct`,
+  own transmission `tx_pct`, reception `rx_pct` and the remainder `other_pct`
+  (neighbors/interference). If the driver does not count (0 ms), the channel
+  changes or the counters are reset, the value is missing.
+- **Connection test loop** (`connection_tests.interval_seconds`): connects to
+  each configured target SSID in turn (`wpa_supplicant` + `dhclient`),
+  measures association time, DHCP time, ping RTT/loss and optionally iperf3
+  throughput, then disconnects cleanly. Right before the DHCP attempt,
+  promiscuous mode is explicitly switched off on the interface
+  (`ip link set <iface> promisc off`) – some drivers (observed: `brcmfmac` on
+  the onboard Wi-Fi of a Raspberry Pi 5) occasionally leave the interface in
+  that mode after the preceding scan, so during the DHCP phase it receives
+  every unicast frame in the air instead of only its own – on a busy network
+  this can make dhclient's duplicate address detection wrongly suspect an IP
+  conflict (symptom: DHCPDECLINE right after DHCPACK, sometimes also "Network
+  is down" under the additional packet load). Purely defensive, it does not
+  interfere if the mode is already off. Right after that, Wi-Fi power
+  management is switched off as well (`iw dev <iface> set power_save off`) – a
+  known problem with Broadcom/Cypress chips (also observed on the Pi 5 onboard
+  Wi-Fi): periodic sleep/wake cycles in power save (visible in `dmesg` as a
+  recurring `brcmf_cfg80211_set_power_mgmt: power save enabled`, even outside
+  active tests) can cause packet loss or a brief disconnect in the middle of a
+  DHCP request. Also purely defensive.
+  iperf3 is configured entirely per target SSID: `iperf3_enabled: false`
+  disables it for that SSID, `iperf3_download` (on by default) controls the
+  additional download measurement, and `iperf3_server`/
+  `iperf3_duration_seconds`/`iperf3_port` per target override the defaults
+  from `connection_tests` where needed – necessary when an SSID leads into a
+  different VLAN with its own iperf3 server/port. Empty or 0 per target = use
+  the default from `connection_tests`.
+  Since 1.0.1.13, `iperf3_bitrate_mbps` per SSID (iperf3 `-b`, 0 = unlimited):
+  an unlimited test saturates the channel for its duration – exactly the
+  effect that skews a speed test in everyday use –, a limited one checks
+  whether a defined rate is reached stably. Start and end of the iperf3 load
+  are reported as `iperf3_started_at`/`iperf3_ended_at`; the dashboard marks
+  these periods in the "Timeline" tab. Since 1.0.1.14,
+  `connection_tests.iperf3_min_interval_minutes` (0 = on every test) limits
+  iperf3 to at most one run per SSID within that interval; the other tests run
+  without iperf3 (`iperf3_deferred: true`). A test triggered via button 3
+  always measures. Since 1.0.1.17 the timestamps are kept in
+  `iperf3_last_run.json` next to the queue (`/var/lib/wlanmon-probe/`), so a
+  restart (update, new remote config) does not bypass the minimum interval.
+  An iperf3 server only serves one test at a time; if it reports
+  "the server is busy running a test" (e.g. because a second probe is
+  measuring right now), the probe retries up to three times, waiting test
+  duration + 5 s in between.
+  **Recommended iperf3 server options:** `iperf3 -s --idle-timeout=30 --rcv-timeout=10000`
+  (open TCP and UDP 5201). The `=` notation is intentional: some NAS Docker UIs
+  pass `--idle-timeout 30` as *one* argument including the space, iperf3 then
+  aborts with "unrecognized option" and the container keeps restarting in a
+  loop. If a client drops out in the middle of a test, a server without these
+  options occasionally gets stuck on "busy" permanently and rejects every
+  further test – observed live: all LAN tests of a site failed for hours until
+  the server was restarted.
+  As a Docker Compose service:
 
   ```yaml
   services:
@@ -401,101 +395,101 @@ journalctl -u wlanmon-probe-update -f
         - "5201:5201/udp"
       command: ["-s", "--idle-timeout=30", "--rcv-timeout=10000"]
   ```
-  Das Ping-Ziel gilt ebenfalls je Ziel-SSID (`ping_target`): leer = Default-Gateway
-  des per DHCP erhaltenen Netzes (sinnvoll bei getrennten/isolierten VLANs),
-  `connection_tests.ping_target` ist nur noch der letzte Fallback, falls kein
-  Gateway ermittelbar ist. Das tatsächlich gepingte Ziel steht im Testergebnis.
-- **Captive-Portal-Check** (optional, je Ziel-SSID mit `captive_portal_check: true`,
-  im Dashboard eine Checkbox pro SSID; Detection-URL global in
-  `connection_tests.captive_portal_url`, Standard
+  The ping target also applies per target SSID (`ping_target`): empty = the
+  default gateway of the network obtained via DHCP (useful with separate/
+  isolated VLANs), `connection_tests.ping_target` is only the last fallback if
+  no gateway can be determined. The target actually pinged is included in the
+  test result.
+- **Captive portal check** (optional, per target SSID with
+  `captive_portal_check: true`, a checkbox per SSID in the dashboard; the
+  detection URL is global in `connection_tests.captive_portal_url`, default
   `http://connectivitycheck.gstatic.com/generate_204`):
-  Nach dem DHCP fragt die Probe die Detection-URL per Klartext-HTTP ab, fest
-  an das WLAN-Interface gebunden (`SO_BINDTODEVICE`, wie `ping -I`), ohne
-  Redirects zu folgen. HTTP 204 = kein Portal; 3xx, 200 oder 511 = Portal
-  (Redirect-Ziel wird mitgeschickt); DNS-/Verbindungsfehler und andere
-  Statuscodes = "nicht prüfbar". Ergebnis steht im Feld `captive_portal` des
-  Connection-Tests; ein erkanntes Portal macht den Test nicht zum Fehlschlag.
-  Grenzen: Portale merken sich oft die MAC nach dem ersten Login (dann
-  "kein Portal"); dagegen hilft `random_mac: true` je Ziel-SSID (siehe
-  unten). Solange ein Portal den Verkehr sperrt, wird iperf3 übersprungen
-  (`skipped: "captive_portal"`); gepingt wird dann nur das Default-Gateway
-  (`ping_target_source: "portal_gateway"`), das fast immer auch hinter dem
-  Portal erreichbar ist – ein eigenes `ping_target` der SSID bzw. der globale
-  Fallback läge meist hinter dem Portal und würde nur „alle verloren“ melden.
-  Ohne ermittelbares Gateway entfällt der Ping. Manche Portale (z. B. Cisco
-  Meraki, `eu.network-auth.com`) verwerfen vor dem Login auch ICMP zum
-  Gateway – das Dashboard zeigt das dann neutral („Portal blockt ICMP“) und
-  zählt es nicht als Ping-Verlust. Als Latenz, die auch durch so ein Portal
-  kommt, misst der Portal-Check ab 1.0.1.8 `tcp_connect_ms` (TCP-Handshake)
-  und `response_ms` (Anfrage bis Antwort-Header) der Detection-URL über das
-  WLAN – ohne DNS, die läuft über den System-Resolver.
-- **Portal-Login** (optional, je Ziel-SSID mit `captive_portal_login`
-  `{enabled, type, username, password, logoff}`): modular aufgebaut, siehe
-  Abschnitt "Portal-Module" unten. Nach dem Login gilt Erfolg, wenn die
-  Detection-URL HTTP 204 liefert (bis zu 4 Prüfungen im Abstand von 1,5 s);
-  dann laufen Ping/iperf3 wie gewohnt. Am Ende des Tests meldet die Probe
-  die Sitzung wieder ab (`logoff`, Standard an), damit keine Gast-Sitzungen
-  auflaufen. Das Ergebnis steht in `captive_portal.login` (`ok`, `portal_type`,
-  `login_by`, `http_status`, `error`) und `captive_portal.logoff`; das Passwort
-  wird nie geloggt oder gesendet, liegt aber wie die PSKs im Klartext in der
-  Konfiguration.
-- **Zufällige MAC** (optional, je Ziel-SSID mit `random_mac: true`): Vor dem
-  Test setzt die Probe eine zufällige, lokal verwaltete MAC auf das
-  WLAN-Interface (`ip link set address`, Interface dafür kurz down) und
-  stellt danach die Hardware-MAC (`/sys/class/net/<if>/phy80211/macaddress`)
-  wieder her. So erscheint ein Captive Portal bei jedem Test neu. Die MAC
-  des Tests steht im Ergebnis (`mac_address`, `mac_random`). Nicht bei
-  MAC-gefilterten Netzen oder DHCP-Reservierungen verwenden. Lässt der
-  Treiber die Änderung nicht zu, läuft der Test mit der bisherigen MAC weiter
-  (Warnung im Log).
-- **Queue** (`queue_store.py`): jede Messung landet zuerst in einer lokalen
-  SQLite-Datei. Ein Sender-Thread überträgt unbestätigte Einträge in
-  Batches per HTTPS an `<server.url>/measurements`. Bei Fehlern bleibt der
-  Eintrag in der Queue und wird mit exponentiellem Backoff erneut versucht.
+  after DHCP, the probe requests the detection URL over plain HTTP, bound to
+  the Wi-Fi interface (`SO_BINDTODEVICE`, like `ping -I`), without following
+  redirects. HTTP 204 = no portal; 3xx, 200 or 511 = portal (the redirect
+  target is included); DNS/connection errors and other status codes = "not
+  checkable". The result is in the `captive_portal` field of the connection
+  test; a detected portal does not make the test fail.
+  Limits: portals often remember the MAC after the first login (then "no
+  portal"); `random_mac: true` per target SSID helps against that (see below).
+  As long as a portal blocks traffic, iperf3 is skipped
+  (`skipped: "captive_portal"`); only the default gateway is pinged then
+  (`ping_target_source: "portal_gateway"`), which is almost always reachable
+  behind the portal too – the SSID's own `ping_target` or the global fallback
+  would usually lie behind the portal and only report "all lost". If no
+  gateway can be determined, the ping is skipped. Some portals (e.g. Cisco
+  Meraki, `eu.network-auth.com`) also drop ICMP to the gateway before login –
+  the dashboard then shows this neutrally ("portal blocks ICMP") and does not
+  count it as ping loss. As a latency that also gets through such a portal,
+  the portal check measures, since 1.0.1.8, `tcp_connect_ms` (TCP handshake)
+  and `response_ms` (request until response headers) of the detection URL over
+  Wi-Fi – without DNS, which goes through the system resolver.
+- **Portal login** (optional, per target SSID with `captive_portal_login`
+  `{enabled, type, username, password, logoff}`): modular, see "Portal
+  modules" below. After the login, it counts as a success when the detection
+  URL returns HTTP 204 (up to 4 checks, 1.5 s apart); then ping/iperf3 run as
+  usual. At the end of the test, the probe logs the session off again
+  (`logoff`, on by default) so guest sessions do not pile up. The result is in
+  `captive_portal.login` (`ok`, `portal_type`, `login_by`, `http_status`,
+  `error`) and `captive_portal.logoff`; the password is never logged or sent,
+  but like the PSKs it is stored in plain text in the configuration.
+- **Random MAC** (optional, per target SSID with `random_mac: true`): before
+  the test, the probe sets a random, locally administered MAC on the Wi-Fi
+  interface (`ip link set address`, the interface goes down briefly for this)
+  and restores the hardware MAC (`/sys/class/net/<if>/phy80211/macaddress`)
+  afterwards. This way a captive portal shows up anew on every test. The MAC
+  used for the test is included in the result (`mac_address`, `mac_random`).
+  Do not use it on MAC-filtered networks or with DHCP reservations. If the
+  driver does not allow the change, the test continues with the existing MAC
+  (warning in the log).
+- **Queue** (`queue_store.py`): every measurement first goes into a local
+  SQLite file. A sender thread transfers unacknowledged entries in batches over
+  HTTPS to `<server.url>/measurements`. On errors the entry stays in the queue
+  and is retried with exponential backoff.
 
-## Portal-Module
+## Portal modules
 
-Der Captive-Portal-Login liegt im Paket `portals/`. Jedes Modul kennt genau
-einen Portaltyp (`portals/base.py`: `detect()`, `login()`, optional `logoff()`).
-`captive_portal_login.type` wählt das Modul (`auto` = per Redirect-URL
-erkennen). Vorhanden:
+The captive portal login lives in the `portals/` package. Each module knows
+exactly one portal type (`portals/base.py`: `detect()`, `login()`, optionally
+`logoff()`). `captive_portal_login.type` selects the module (`auto` = detect
+via the redirect URL). Available:
 
-| type | Portal | Login-Arten |
-|------|--------|-------------|
-| `cirrus` | Alcatel-Lucent OmniVista Cirrus (Guest/BYOD) | Benutzername/Passwort, Access-Code, nur Nutzungsbedingungen (ohne Zugangsdaten) |
-| `form` | Klassische Formular-Portale, z. B. pfSense (`index.php?zone=…&redirurl=…`) | Benutzername/Passwort, Voucher/Code, nur Klick auf „Akzeptieren“ |
+| type | Portal | Login methods |
+|------|--------|---------------|
+| `cirrus` | Alcatel-Lucent OmniVista Cirrus (guest/BYOD) | username/password, access code, terms of use only (no credentials) |
+| `form` | Classic form-based portals, e.g. pfSense (`index.php?zone=…&redirurl=…`) | username/password, voucher/code, just clicking "Accept" |
 
-`form` lädt die Portal-Seite (mit Cookies und Redirects), liest das
-HTML-Formular und füllt es: hidden-Felder unverändert, Passwortfeld bzw. Feld
-mit `voucher`/`code`/`token` im Namen = Passwort, Feld mit `user`/`login`/`name`
-= Benutzername, Checkbox mit `accept`/`terms`/… wird angehakt, dazu der
-Submit-Button. Ohne Benutzer-/Passwortfeld sind keine Zugangsdaten nötig. Bei
-einer IP-Adresse als Portal-Ziel (Gateway) wird das TLS-Zertifikat nicht
-geprüft. Eine Abmeldung gibt es nicht. Bei `auto` ist `form` der letzte
-Ausweg, wenn kein spezielles Modul passt. Portale, die ihr Formular erst per
-JavaScript erzeugen, brauchen ein eigenes Modul.
+`form` loads the portal page (with cookies and redirects), reads the HTML form
+and fills it in: hidden fields unchanged, the password field or a field with
+`voucher`/`code`/`token` in its name = password, a field with
+`user`/`login`/`name` = username, a checkbox with `accept`/`terms`/… gets
+ticked, plus the submit button. Without a user/password field, no credentials
+are needed. If the portal target is an IP address (gateway), the TLS
+certificate is not verified. There is no logoff. With `auto`, `form` is the
+last resort when no specific module matches. Portals that generate their form
+with JavaScript need a module of their own.
 
-Neues Portal: Datei unter `portals/` anlegen, `PortalModule` ableiten und in
-`portals/__init__.py` (`MODULES`) eintragen; im Dashboard-Dropdown (Portal-Typ)
-ergänzen. Module werfen keine Exceptions, sondern melden Fehler im Ergebnis.
+New portal: create a file under `portals/`, subclass `PortalModule` and
+register it in `portals/__init__.py` (`MODULES`); add it to the dashboard
+drop-down (portal type). Modules do not raise exceptions but report errors in
+the result.
 
-## Display & Buttons (optional, NanoHat OLED)
+## Display & buttons (optional, NanoHat OLED)
 
-Ersetzt den bisherigen WLANPi-eigenen FPMS-Daemon (`fpms.service` /
-`oled-start`) durch ein eigenes Modul (`display.py`), das direkt in
-wlanmon-probe integriert ist. Hardware an einem laufenden Gerät
-verifiziert:
+Replaces the former WLANPi FPMS daemon (`fpms.service` / `oled-start`) with a
+module of its own (`display.py`) that is integrated directly into
+wlanmon-probe. Hardware verified on a running device:
 
-- **Display**: SSD1306-kompatibles OLED, I2C-Adresse `0x3c`, Bus `i2c-0`
-  (kein Framebuffer-Gerät vorhanden – Ansteuerung läuft direkt per I2C
-  aus dem Userspace, dafür reicht das Device-Tree-Overlay `i2c0`).
-- **3 Buttons**: sysfs-GPIO `0`, `2`, `3`, rising-edge.
+- **Display**: SSD1306-compatible OLED, I2C address `0x3c`, bus `i2c-0`
+  (no framebuffer device present – it is driven directly over I2C from user
+  space, for which the device tree overlay `i2c0` is enough).
+- **3 buttons**: sysfs GPIO `0`, `2`, `3`, rising edge.
 
-**Wichtig:** `fpms.service` muss deaktiviert sein (macht
-`setup_wlanmon_probe.sh` automatisch), sonst konkurrieren FPMS und
-wlanmon-probe um denselben I2C-Bus und dieselben GPIOs.
+**Important:** `fpms.service` must be disabled (`setup_wlanmon_probe.sh` does
+this automatically), otherwise FPMS and wlanmon-probe compete for the same I2C
+bus and the same GPIOs.
 
-Aktivieren in `config.yaml`:
+Enable it in `config.yaml`:
 
 ```yaml
 display:
@@ -503,75 +497,71 @@ display:
   i2c_port: 0
   i2c_address: 0x3c
   width: 128
-  height: 64   # bei verzerrter unterer Hälfte auf 32 wechseln
+  height: 64   # switch to 32 if the lower half is distorted
   button_gpios: [0, 2, 3]
-  sleep_after_seconds: 120   # Display-Schlaf, 0 = immer an
+  sleep_after_seconds: 120   # display sleep, 0 = always on
 ```
 
-Fehlen die Bibliotheken (`luma.oled`/`luma.core`, in `requirements.txt`
-enthalten) oder schlägt die Hardware-Initialisierung fehl, loggt
-`DisplayLoop` eine Warnung und bleibt inaktiv – der Rest von
-wlanmon-probe läuft unverändert weiter.
+If the libraries are missing (`luma.oled`/`luma.core`, included in
+`requirements.txt`) or the hardware initialization fails, `DisplayLoop` logs a
+warning and stays inactive – the rest of wlanmon-probe keeps running
+unchanged.
 
-**Bedienung:**
-- Button 1 / Button 2: zwischen den Screens navigieren (Status → letzter
-  Scan → letzter Connection-Test → wieder Status)
-- Button 3: löst sofort einen Connection-Test-Durchlauf aus, statt auf
-  das nächste `connection_tests.interval_seconds`-Intervall zu warten –
-  praktisch für Diagnose direkt vor Ort am Gerät.
-- **Display-Schlaf:** nach `sleep_after_seconds` (Standard 120) ohne
-  Tastendruck schaltet sich das Panel ab (OLEDs brennen bei dauerhaft
-  statischem Bild ein). Jede Taste weckt es wieder; dieser erste Druck
-  wechselt weder den Screen noch löst er einen Test aus. Der Inhalt wird
-  auch im Schlaf weiter aktualisiert und ist nach dem Aufwecken aktuell.
-  `0` = immer an. Die Option steht im lokalen `display`-Block der
-  `config.yaml` (nicht in der Dashboard-Konfiguration) und greift nach
-  einem Neustart der Probe.
+**Operation:**
+- Button 1 / button 2: navigate between the screens (status → last scan →
+  last connection test → back to status)
+- Button 3: triggers a connection test run immediately instead of waiting for
+  the next `connection_tests.interval_seconds` interval – handy for on-site
+  diagnostics right at the device.
+- **Display sleep:** after `sleep_after_seconds` (default 120) without a button
+  press, the panel switches off (OLEDs burn in with a permanently static
+  image). Any button wakes it up again; this first press neither changes the
+  screen nor triggers a test. The content keeps being updated during sleep and
+  is current after waking up. `0` = always on. The option lives in the local
+  `display` block of `config.yaml` (not in the dashboard configuration) and
+  takes effect after a restart of the probe.
 
-Die Screens zeigen Device-ID/Standort/Uptime/Zeit seit letzter
-erfolgreicher Server-Übertragung, das letzte Scan-Ergebnis
-(Zeitpunkt + Netzanzahl) sowie den letzten Connection-Test (SSID,
-Status, Ping-RTT/-Verlust, iperf3-Durchsatz falls konfiguriert,
-Fehlertext bei Fehlschlag). Aktualisierung ist ereignisgesteuert – ein
-Redraw passiert nur bei Button-Druck oder wenn sich der zugrunde
-liegende Status tatsächlich ändert, nicht in festem Rhythmus.
+The screens show device ID/site/uptime/time since the last successful server
+transfer, the last scan result (time + number of networks) and the last
+connection test (SSID, status, ping RTT/loss, iperf3 throughput if configured,
+error text on failure). Updates are event-driven – a redraw only happens on a
+button press or when the underlying status actually changes, not on a fixed
+schedule.
 
-Noch nicht gegen echte Hardware getestet (nur anhand der oben
-verifizierten I2C-Adresse/GPIO-Nummern und der Standard-API von
-`luma.oled` gebaut) – beim ersten Einsatz Log (`journalctl -u
-wlanmon-probe`) auf Fehler beim Hardware-Init prüfen.
+Not yet tested against real hardware (built only from the I2C address/GPIO
+numbers verified above and the standard API of `luma.oled`) – on first use,
+check the log (`journalctl -u wlanmon-probe`) for hardware init errors.
 
-## Zentrale Konfiguration vom Server (optional)
+## Central configuration from the server (optional)
 
-Mit `remote_config.enabled: true` in `config.yaml` zieht sich der Client die
-Blöcke `scan` und `connection_tests` (Intervalle, Ziel-SSIDs, Ping-Ziel,
-iperf3-Server...) periodisch vom Server statt sie nur lokal zu lesen:
+With `remote_config.enabled: true` in `config.yaml`, the client periodically
+fetches the `scan` and `connection_tests` blocks (intervals, target SSIDs, ping
+target, iperf3 server...) from the server instead of only reading them locally:
 
-- Beim Start: `GET <server.url>/devices/<device_id>/config` mit
-  `Authorization: Bearer <api_key>`. Antwort erwartet als JSON mit den
-  Keys `scan` und `connection_tests` (gleiche Struktur wie in
+- On startup: `GET <server.url>/devices/<device_id>/config` with
+  `Authorization: Bearer <api_key>`. The response is expected as JSON with the
+  keys `scan` and `connection_tests` (same structure as in
   `config.example.yaml`).
-- Erfolg -> Werte werden lokal unter `remote_config.cache_path` gecacht
-  und verwendet.
-- Fehlschlag beim Start -> letzter lokaler Cache wird verwendet, falls
-  vorhanden; sonst die lokalen Werte aus `config.yaml`.
-- 404 vom Server -> Server kennt (noch) keine spezifische Konfiguration
-  für dieses Gerät, lokale/gecachte Werte bleiben aktiv.
-- Im laufenden Betrieb prüft ein `ConfigWatcher`-Thread alle
-  `remote_config.poll_interval_seconds`, ob sich die Server-Konfiguration
-  geändert hat (Hash-Vergleich). Bei einer Änderung wird der Cache
-  aktualisiert und der Prozess beendet sich sauber (Exit-Code 75) –
-  systemd (`Restart=always`) startet ihn danach mit der neuen
-  Konfiguration frisch neu. Das ist robuster als ein Live-Reload
-  einzelner Threads und stellt sicher, dass Scan-/Test-Loop nie mit
-  inkonsistenten halb-alten Werten laufen.
+- Success -> the values are cached locally under `remote_config.cache_path`
+  and used.
+- Failure on startup -> the last local cache is used if available; otherwise
+  the local values from `config.yaml`.
+- 404 from the server -> the server has no specific configuration for this
+  device (yet), local/cached values stay active.
+- During operation, a `ConfigWatcher` thread checks every
+  `remote_config.poll_interval_seconds` whether the server configuration has
+  changed (hash comparison). On a change, the cache is updated and the process
+  exits cleanly (exit code 75) – systemd (`Restart=always`) then starts it
+  fresh with the new configuration. This is more robust than a live reload of
+  individual threads and makes sure the scan/test loops never run with
+  inconsistent half-old values.
 
-Bootstrap-Werte (`device.id`, `device.site`, `interface.name`,
-`server.*`, `queue.*`, `logging.*`) bleiben immer lokal in `config.yaml`
-und werden nie vom Server überschrieben – sonst könnte sich ein Gerät
-selbst vom Server abschneiden.
+Bootstrap values (`device.id`, `device.site`, `interface.name`, `server.*`,
+`queue.*`, `logging.*`) always stay local in `config.yaml` and are never
+overwritten by the server – otherwise a device could cut itself off from the
+server.
 
-## Erwartetes Server-API-Schema (POST /measurements)
+## Expected server API schema (POST /measurements)
 
 ```json
 {
@@ -588,7 +578,7 @@ selbst vom Server abschneiden.
         "timestamp": "2026-09-15T10:00:00+00:00",
         "interface": "wlan1",
         "networks": [
-          {"ssid": "Firmennetz-Corp", "bssid": "aa:bb:cc:dd:ee:ff",
+          {"ssid": "Corp-Network", "bssid": "aa:bb:cc:dd:ee:ff",
            "signal_dbm": -47.0, "frequency_mhz": 5180, "channel": 36,
            "station_count": 7, "channel_utilization_pct": 25.1}
         ],
@@ -605,7 +595,7 @@ selbst vom Server abschneiden.
       "data": {
         "timestamp": "2026-09-15T10:05:00+00:00",
         "interface": "wlan1",
-        "ssid": "Firmennetz-Corp",
+        "ssid": "Corp-Network",
         "security": "wpa2-psk",
         "connected": true,
         "assoc_seconds": 1.2,
@@ -622,67 +612,65 @@ selbst vom Server abschneiden.
 }
 ```
 
-Erwartete Antwort: HTTP 2xx bei erfolgreicher Annahme des gesamten Batches.
-Alles andere (4xx/5xx, Timeout) führt dazu, dass der Batch unverändert in
-der Queue verbleibt und später erneut gesendet wird.
+Expected response: HTTP 2xx when the whole batch has been accepted.
+Anything else (4xx/5xx, timeout) leaves the batch unchanged in the queue, and
+it is sent again later.
 
-`auto_update` zeigt das Dashboard auf der Geräteseite an. an/aus und Branch
-liest die Probe bei jedem Batch frisch aus `config.yaml`, mit denselben
-Regeln wie `update_probe.py` (eine geänderte `auto_update.branch` wirkt ohne
-Neustart). Repo-URL, Commit und Ergebnis des letzten Update-Laufs
-(`current`/`updated`/`disabled`/`error` samt Fehlertext, z. B. ein
-`Permission denied (publickey)` beim `git fetch`) schreibt `update_probe.py`
-bei jedem Lauf nach `/var/lib/wlanmon-probe/update_state.json` – die Probe
-selbst läuft mit `ProtectHome=true` und sieht den Checkout unter `/home`
-nicht. Zugangsdaten in einer HTTP(S)-URL (`https://user:token@...`) werden
-vorher entfernt. Die Datei entsteht erst beim ersten Lauf einer
-`update_probe.py` ab 1.0.1.3; bis dahin fehlen diese Angaben.
+The dashboard shows `auto_update` on the device page. The probe reads on/off
+and branch fresh from `config.yaml` with every batch, using the same rules as
+`update_probe.py` (a changed `auto_update.branch` takes effect without a
+restart). Repo URL, commit and result of the last update run
+(`current`/`updated`/`disabled`/`error` including the error text, e.g. a
+`Permission denied (publickey)` during `git fetch`) are written by
+`update_probe.py` on every run to `/var/lib/wlanmon-probe/update_state.json` –
+the probe itself runs with `ProtectHome=true` and cannot see the checkout under
+`/home`. Credentials in an HTTP(S) URL (`https://user:token@...`) are removed
+beforehand. The file only appears after the first run of an `update_probe.py`
+from 1.0.1.3 on; until then this information is missing.
 
-Ab 1.0.1.12 geben `git fetch`/`git pull` bei hängender Verbindung schnell
-auf (SSH: `ConnectTimeout=20`, `ServerAliveInterval=10`/`CountMax=3`; HTTPS:
-Abbruch unter 1 KB/s für 30 s). Die SSH-Timeouts werden an den Befehl
-angehängt, den git ohnehin nutzen würde (`GIT_SSH_COMMAND`, sonst
-`core.sshCommand`, sonst `ssh`) – ab 1.0.1.15; 1.0.1.12–1.0.1.14 haben ein per
-`core.sshCommand` eingerichtetes SSH überschrieben („Host key verification
-failed“),
-und ein fehlgeschlagener `fetch` wird nach 45 s einmal wiederholt. Anlass:
-ein `fetch` hing 120 s, als er zeitgleich mit einem Connection-Test lief –
-`wlan0` im selben Subnetz wie `eth0` bekommt dann kurz eine eigene
-Default-Route. `fail_count` zählt Fehlschläge in Folge; das Dashboard zeigt
-einen einzelnen nur als grauen Hinweis, rot erst ab zwei in Folge.
+Since 1.0.1.12, `git fetch`/`git pull` give up quickly on a hanging connection
+(SSH: `ConnectTimeout=20`, `ServerAliveInterval=10`/`CountMax=3`; HTTPS: abort
+below 1 KB/s for 30 s). The SSH timeouts are appended to the command git would
+use anyway (`GIT_SSH_COMMAND`, otherwise `core.sshCommand`, otherwise `ssh`) –
+since 1.0.1.15; 1.0.1.12–1.0.1.14 overrode an SSH command set up via
+`core.sshCommand` ("Host key verification failed") – and a failed `fetch` is
+retried once after 45 s. The reason: a `fetch` hung for 120 s when it ran at the
+same time as a connection test – `wlan0` in the same subnet as `eth0` then
+briefly gets a default route of its own. `fail_count` counts consecutive
+failures; the dashboard shows a single one only as a grey hint, red only from
+two in a row.
 
-`probe_version` kommt aus der `VERSION`-Datei neben `main.py` (wird bei
-Updates automatisch mitkopiert, siehe `FILES` in `update_probe.py`) -
-"unbekannt", falls die Datei fehlt. Versionsschema wie im Dashboard (siehe
-dortiges README, Abschnitt "Version"): jeder Commit auf `main` zählt die
-vierte Stelle hoch (`1.0.1.1`, `1.0.1.2`, ...), mit dem nächsten Release
-entfällt sie wieder (`1.0.2`). Von Hand im selben Commit, kein
-automatischer Bump.
+`probe_version` comes from the `VERSION` file next to `main.py` (copied
+automatically on updates, see `FILES` in `update_probe.py`) – `"unbekannt"` if the
+file is missing. Version scheme as in the dashboard (see its README, section
+"Version"): every commit on `main` increments the fourth digit (`1.0.1.1`,
+`1.0.1.2`, ...), with the next release it is dropped again (`1.0.2`). Done by
+hand in the same commit, no automatic bump.
 
-`device.site` in `config.yaml` gibt es weiterhin, wird aber seit dem
-Standort-Umbau im Dashboard (Zuordnung läuft dort über `devices.site_id`,
-Admin-verwaltet) nicht mehr an den Server geschickt - rein lokal für die
-Log-Zeile beim Start und den OLED-Status (`display.py`).
+`device.site` still exists in `config.yaml`, but since the site rework in the
+dashboard (assignment happens there via `devices.site_id`, managed by admins)
+it is no longer sent to the server – it is purely local, for the log line on
+startup and the OLED status (`display.py`).
 
 ## 802.1X / WPA2-Enterprise
 
-Ziele mit `security: "wpa2-eap"` brauchen einen Block `eap` (Beispiel in
-`config.example.yaml`, normalerweise über das Dashboard gepflegt).
-Unterstützt: `peap` (MSCHAPv2), `ttls` (PAP, MSCHAPv2, MSCHAP, CHAP) und
-`tls` (Client-Zertifikat + privater Schlüssel).
+Targets with `security: "wpa2-eap"` need an `eap` block (example in
+`config.example.yaml`, usually maintained via the dashboard). Supported:
+`peap` (MSCHAPv2), `ttls` (PAP, MSCHAPv2, MSCHAP, CHAP) and `tls` (client
+certificate + private key).
 
-- Das CA-Zertifikat ist optional: ist eines hinterlegt und
-  `verify_server` nicht `false`, wird der RADIUS-Server geprüft
-  (optional zusätzlich gegen `server_name`); sonst nicht.
-- Zertifikate/Schlüssel stehen als PEM-Text in der Config und liegen
-  während eines Tests in einem 0700-Verzeichnis, das danach gelöscht wird.
-  Der lokale Config-Cache (`remote_config_cache.yaml`) ist nur für root lesbar.
-- Der Test wartet nach der Assoziation auf den abgeschlossenen
-  EAP-/4-Way-Handshake (`wpa_cli status`) und weist die Dauer als
-  `auth_seconds` getrennt von `assoc_seconds` aus. Schlägt er fehl, steht
-  eine lesbare Ursache im Ergebnis (Zertifikat, Passwort, RADIUS-Timeout ...).
-- Benötigt `wpa_cli` (Paket `wpasupplicant`).
+- The CA certificate is optional: if one is stored and `verify_server` is not
+  `false`, the RADIUS server is verified (optionally also against
+  `server_name`); otherwise it is not.
+- Certificates/keys are stored as PEM text in the config and are placed in a
+  0700 directory during a test, which is deleted afterwards. The local config
+  cache (`remote_config_cache.yaml`) is readable by root only.
+- After association, the test waits for the completed EAP/4-way handshake
+  (`wpa_cli status`) and reports its duration as `auth_seconds`, separately
+  from `assoc_seconds`. If it fails, a readable cause is included in the
+  result (certificate, password, RADIUS timeout ...).
+- Requires `wpa_cli` (package `wpasupplicant`).
 
-## Lizenz
+## License
 
-MIT – siehe [LICENSE](../LICENSE).
+MIT – see [LICENSE](../LICENSE).
