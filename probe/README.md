@@ -4,15 +4,12 @@ Scans Wi-Fi networks and runs periodic connection tests against configured
 SSIDs. Results are buffered locally (SQLite) and sent to a central server
 over HTTPS.
 
-Formerly "wlanpi-probe" based on the WLANPi image – now runs on a custom,
-lean Armbian image for the NanoPi NEO2 without the WLANPi network/UI tooling
-(see [`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh)), because individual
-WLANPi services (especially `ifplugd` with `wlan0` in hotplug mode)
-demonstrably clashed with the direct `wpa_supplicant`/`iw` control used here.
-
 ## Requirements
 
-- Debian/Armbian-based system on the NanoPi NEO2 (no WLANPi image needed)
+- Debian-based system, e.g. a minimal Armbian on a NanoPi NEO2/NEO3 or
+  Raspberry Pi OS. The probe controls Wi-Fi directly via
+  `wpa_supplicant`/`iw` – other network managers must not manage the test
+  interface (see [`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh))
 - USB Wi-Fi adapter (e.g. Comfast CF-953AX, driver `mt7921u`, kernel ≥ 5.19)
 - Root privileges (for `iw`, `wpa_supplicant`, `dhclient`)
 - Packages: `iw`, `wpasupplicant`, `isc-dhcp-client` (or `dhcpcd5`), `iputils-ping`,
@@ -280,34 +277,6 @@ combined wlanmon repo): if `.git` is not in `repo_dir` itself but in a parent
 directory, that is accepted as long as `repo_dir` contains the probe
 (`update_probe.py`).
 
-**With an SSH deploy key instead of HTTPS** (e.g. for a private repo, one key
-per device), a one-time manual step is needed: the key lives in the home
-directory of the user who created it with `ssh-keygen` (e.g.
-`/home/pi/.ssh/id_ed25519`), but `update_probe.py` runs as `root` and has no
-SSH setup of its own for GitHub by default – `git fetch` then fails with
-`Permission denied (publickey)`. Fix: let `root` reference the same key (it can
-read the file regardless of the home directory's permissions – root bypasses
-file permissions):
-
-```bash
-sudo mkdir -p /root/.ssh && sudo chmod 700 /root/.ssh
-sudo tee -a /root/.ssh/config > /dev/null << 'EOF'
-Host github.com
-    HostName github.com
-    User git
-    IdentityFile /home/pi/.ssh/id_ed25519
-    IdentitiesOnly yes
-EOF
-sudo chmod 600 /root/.ssh/config
-# Make the host key known in advance, otherwise the first connection from
-# the service (without a terminal) hangs at the interactive confirmation:
-sudo ssh-keyscan github.com | sudo tee -a /root/.ssh/known_hosts > /dev/null
-sudo ssh -T git@github.com   # expected: "Hi <user>/<repo>! ... successfully authenticated"
-```
-
-Check the path to the key beforehand with `ls -la ~/.ssh/` (the file name may
-differ per device) – this step is needed once per device.
-
 **Security note:** this automatically runs whatever is on `branch` – only
 enable it if that branch really contains released code only (no test/feature
 branch) and if access to the GitHub account is secured accordingly.
@@ -494,17 +463,16 @@ the result.
 
 ## Display & buttons (optional, NanoHat OLED)
 
-Replaces the former WLANPi FPMS daemon (`fpms.service` / `oled-start`) with a
-module of its own (`display.py`) that is integrated directly into
-wlanmon-probe. Hardware verified on a running device:
+Built into wlanmon-probe (`display.py`), no separate display daemon.
+Hardware verified on a running device:
 
 - **Display**: SSD1306-compatible OLED, I2C address `0x3c`, bus `i2c-0`
   (no framebuffer device present – it is driven directly over I2C from user
   space, for which the device tree overlay `i2c0` is enough).
 - **3 buttons**: sysfs GPIO `0`, `2`, `3`, rising edge.
 
-**Important:** `fpms.service` must be disabled (`setup_wlanmon_probe.sh` does
-this automatically), otherwise FPMS and wlanmon-probe compete for the same I2C
+**Important:** no other process may use the display at the same time (e.g. an
+OLED daemon shipped with the OS image), otherwise both compete for the same I2C
 bus and the same GPIOs.
 
 Enable it in `config.yaml`:
@@ -587,7 +555,7 @@ server.
   "probe_version": "1.0.0",
   "auto_update": {"enabled": true, "branch": "stable",
                   "repo_dir": "/home/pi/wlanmon/probe",
-                  "repo_url": "git@github.com:dgawin/wlanmon.git"},
+                  "repo_url": "https://github.com/dgawin/wlanmon.git"},
   "measurements": [
     {
       "id": 123,

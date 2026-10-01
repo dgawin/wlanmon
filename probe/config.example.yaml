@@ -185,8 +185,8 @@ display:
   # in dem Fall hier auf 32 wechseln.
   width: 128
   height: 64
-  # sysfs-GPIO-Nummern der 3 Taster (bestätigt über den bisherigen
-  # FPMS-Quelltext: gpio_d0=0, gpio_d1=2, gpio_d2=3).
+  # sysfs-GPIO-Nummern der 3 Taster der NanoHat OLED (gpio_d0=0, gpio_d1=2,
+  # gpio_d2=3).
   # Reihenfolge = [vorheriger Screen, nächster Screen, sofortiger Test].
   button_gpios: [0, 2, 3]
   # Display nach so vielen Sekunden ohne Tastendruck abschalten (OLEDs

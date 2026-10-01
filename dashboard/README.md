@@ -1,6 +1,6 @@
 # WLANMON – Server (PHP + MySQL)
 
-Receives measurements from the `wlanpi-probe` clients, stores them in
+Receives measurements from the wlanmon probe clients, stores them in
 MySQL/MariaDB and shows them in a simple web dashboard. It also provides the
 endpoint the clients use to fetch their central configuration (see
 `config_manager.py` in the client).
@@ -226,46 +226,10 @@ deliberate: `config.php` stays untouched, and a failed `git pull` (e.g. due
 to local changes in the checkout) can never leave the live files in an
 inconsistent intermediate state.
 
-**One-time setup:**
-
-For a public repo, a plain HTTPS clone without login is enough:
+**One-time setup** (the repo is public, no login or key needed):
 
 ```bash
 git clone https://github.com/dgawin/wlanmon.git ~/wlanmon
-chmod +x ~/wlanmon/dashboard/update_dashboard.sh
-```
-
-For a **private** repo, `git clone` prompts for a password interactively –
-but since 2021 GitHub no longer accepts account passwords for `git`
-operations over HTTPS ("Invalid username or token. Password authentication
-is not supported"). For an unattended cron job, a read-only SSH deploy key
-works better than a personal access token (no manual renewal when it
-expires):
-
-```bash
-# Create a key dedicated to this repo:
-ssh-keygen -t ed25519 -C "wlanmon-dashboard-deploy" -f ~/.ssh/wlanmon_dashboard_deploy -N ""
-cat ~/.ssh/wlanmon_dashboard_deploy.pub
-```
-
-Add the public key on GitHub: repo → **Settings** → **Deploy keys** →
-**Add deploy key** → paste it, **do NOT tick "Allow write access"**
-(read-only is enough, the server only pulls and never pushes). Then create
-an SSH host alias so `git` uses exactly this key (in case other GitHub keys
-exist on the server):
-
-```bash
-cat >> ~/.ssh/config << 'EOF'
-Host github.com-wlanmon-dashboard
-    HostName github.com
-    User git
-    IdentityFile ~/.ssh/wlanmon_dashboard_deploy
-    IdentitiesOnly yes
-EOF
-chmod 600 ~/.ssh/config
-ssh-keyscan github.com >> ~/.ssh/known_hosts   # make the host key known in advance
-
-git clone git@github.com-wlanmon-dashboard:dgawin/wlanmon.git ~/wlanmon
 chmod +x ~/wlanmon/dashboard/update_dashboard.sh
 ```
 
@@ -326,7 +290,7 @@ tail -f /var/log/wlanmon-dashboard-update.log
 ```bash
 curl -u admin:<ADMIN_PASSWORD> -X POST https://wlanmon.example.com/api/v1/admin/devices \
   -H "Content-Type: application/json" \
-  -d '{"device_id": "wlanpi-probe-01", "site_id": 1}'
+  -d '{"device_id": "wlanmon-probe-01", "site_id": 1}'
 ```
 
 `site_id` is optional (ID of an existing site, see `/sites`) – without it,
@@ -351,7 +315,7 @@ without HTTPS, see "Server connection & TLS" in the probe README.
 
 ```bash
 curl -u admin:<ADMIN_PASSWORD> -X PUT \
-  https://wlanmon.example.com/api/v1/admin/devices/wlanpi-probe-01/config \
+  https://wlanmon.example.com/api/v1/admin/devices/wlanmon-probe-01/config \
   -H "Content-Type: application/json" \
   -d '{
     "scan": {"interval_seconds": 60},
@@ -381,10 +345,10 @@ On the client, also set `remote_config.enabled: true` in `config.yaml`.
 
 ```bash
 curl -u admin:<ADMIN_PASSWORD> -X POST \
-  https://wlanmon.example.com/api/v1/admin/devices/wlanpi-probe-01/rotate-key
+  https://wlanmon.example.com/api/v1/admin/devices/wlanmon-probe-01/rotate-key
 
 curl -u admin:<ADMIN_PASSWORD> -X DELETE \
-  https://wlanmon.example.com/api/v1/admin/devices/wlanpi-probe-01
+  https://wlanmon.example.com/api/v1/admin/devices/wlanmon-probe-01
 ```
 
 ## Zabbix integration (monitoring/alerting)
@@ -406,18 +370,18 @@ rights (creating/deleting devices, setting config, seeing PSKs).
 # LLD discovery: one row per registered device, for Zabbix host prototypes
 curl -H "Authorization: Bearer <ZABBIX_TOKEN>" \
   https://wlanmon.example.com/api/v1/zabbix/discovery/devices
-# -> {"data":[{"{#DEVICE_ID}":"wlanpi-probe-01","{#SITE}":"customer-acme-site-a"}]}
+# -> {"data":[{"{#DEVICE_ID}":"wlanmon-probe-01","{#SITE}":"customer-acme-site-a"}]}
 
 # Aggregated status of one device (master item for dependent items)
 curl -H "Authorization: Bearer <ZABBIX_TOKEN>" \
-  https://wlanmon.example.com/api/v1/zabbix/devices/wlanpi-probe-01/status
+  https://wlanmon.example.com/api/v1/zabbix/devices/wlanmon-probe-01/status
 ```
 
 Response of `/status` (example):
 
 ```json
 {
-  "device_id": "wlanpi-probe-01",
+  "device_id": "wlanmon-probe-01",
   "site": "customer-acme-site-a",
   "last_seen_at": "2026-09-16 08:00:00",
   "seconds_since_last_seen": 42,

@@ -2,11 +2,11 @@
 # Provisioning-Script fuer wlanmon-probe auf dem NanoPi NEO2/NEO3.
 #
 # Aufgaben in einem Lauf:
-#   1. Bekannte Konflikt-Dienste aus dem WLANPi-Fundament deaktivieren
-#      (nachgewiesen: ifplugd verwaltet wlan0 im Wireless-Hotplug-Modus
-#      und kollidiert mit der direkten wpa_supplicant/iw-Steuerung in
-#      wifi_ops.py; ausserdem die ARP-Flux-Sysctls fuer den Fall, dass
-#      eth0 und das WLAN-Testnetz im selben Subnetz haengen).
+#   1. Konflikte mit der WLAN-Steuerung vermeiden (nachgewiesen: ifplugd
+#      verwaltet wlan0 im Wireless-Hotplug-Modus und kollidiert mit der
+#      direkten wpa_supplicant/iw-Steuerung in wifi_ops.py; ausserdem die
+#      ARP-Flux-Sysctls fuer den Fall, dass eth0 und das WLAN-Testnetz im
+#      selben Subnetz haengen).
 #   1.5 net.ifnames=0 setzen, damit USB-WLAN-Adapter ueber Geraete hinweg
 #      konsistent wlan0/wlan1 statt der MAC-basierten Form (wlx<mac>)
 #      bekommen - wirkt erst nach einem Reboot.
@@ -15,12 +15,8 @@
 #      WLAN-Interface ausgegeben, das in config.yaml unter
 #      interface.name eingetragen werden muss.
 #
-# Alle Deaktivierungen sind reversibel (disable/mask statt purge), damit
-# das Script sowohl auf einem bestehenden WLANPi-Image als Migrations-
-# schritt laeuft als auch - ohne Fehler - auf einem bereits sauberen,
-# rein fuer wlanmon-probe aufgesetzten Armbian-Image (die betroffenen
-# Units existieren dort schlicht nicht, die jeweiligen Schritte werden
-# dann uebersprungen).
+# Mehrfach ausfuehrbar; fehlt etwas (z.B. ifplugd), wird der jeweilige
+# Schritt uebersprungen.
 #
 # Aufruf: sudo ./setup_wlanmon_probe.sh [--skip-foundation-cleanup]
 
@@ -40,20 +36,8 @@ fi
 log() { echo "[setup_wlanmon_probe] $*"; }
 
 # ---------------------------------------------------------------------
-# 1. WLANPi-Fundament: bekannte Konflikt-Dienste deaktivieren
+# 1. Konflikte mit der WLAN-Steuerung vermeiden
 # ---------------------------------------------------------------------
-
-disable_unit_if_present() {
-    local unit="$1"
-    if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "^$unit"; then
-        log "Deaktiviere $unit (stop + disable + mask) ..."
-        systemctl stop "$unit" 2>/dev/null || true
-        systemctl disable "$unit" 2>/dev/null || true
-        systemctl mask "$unit" 2>/dev/null || true
-    else
-        log "$unit nicht vorhanden - ueberspringe (bereits sauberes Image?)."
-    fi
-}
 
 remove_wlan_from_ifplugd() {
     local cfg="/etc/default/ifplugd"
@@ -111,12 +95,9 @@ EOF
 }
 
 if [ "$SKIP_FOUNDATION_CLEANUP" -eq 1 ]; then
-    log "--skip-foundation-cleanup gesetzt - WLANPi-Fundament wird nicht angefasst."
+    log "--skip-foundation-cleanup gesetzt - ifplugd und ARP-Sysctls werden nicht angefasst."
 else
-    log "=== Schritt 1: WLANPi-Fundament bereinigen ==="
-    disable_unit_if_present fpms.service
-    disable_unit_if_present networkinfo.service
-    disable_unit_if_present wlanpi_webui.service
+    log "=== Schritt 1: Konflikte mit der WLAN-Steuerung vermeiden ==="
     remove_wlan_from_ifplugd
     setup_arp_flux_sysctls
 fi

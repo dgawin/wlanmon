@@ -5,13 +5,13 @@ Hardware auf einem laufenden Geraet verifiziert (siehe README.md):
   - Display: SSD1306-kompatibel, I2C-Adresse 0x3c, Bus i2c-0
     (`i2cdetect -y 0` zeigt 0x3c; kein Framebuffer-Geraet vorhanden,
     d.h. Ansteuerung passiert direkt per I2C aus dem Userspace)
-  - Buttons: sysfs-GPIO 0, 2, 3 (im FPMS-Quelltext gpio_d0/d1/d2),
+  - Buttons: sysfs-GPIO 0, 2, 3 (gpio_d0/d1/d2 der NanoHat OLED),
     konfiguriert mit edge=rising
 
-Ersetzt den bisherigen FPMS-Daemon (`fpms.service`/`oled-start`)
-vollstaendig fuer dieses Geraet - FPMS muss deaktiviert sein (siehe
-setup_wlanmon_probe.sh), sonst konkurrieren beide Prozesse um denselben
-I2C-Bus und dieselben GPIOs.
+Kein separater Display-Daemon - ein anderer Prozess, der das Display
+ansteuert (z.B. ein OLED-Dienst des Betriebssystem-Images), muss
+deaktiviert sein, sonst konkurrieren beide um denselben I2C-Bus und
+dieselben GPIOs.
 
 Zeigt den von ProbeStatus gehaltenen Zustand in mehreren Screens, per
 Button 1/2 navigierbar; Button 3 loest einen sofortigen Connection-Test
@@ -190,8 +190,8 @@ class DisplayLoop(threading.Thread):
         except Exception:
             log.exception(
                 "OLED-Initialisierung fehlgeschlagen (I2C-Bus %d, Adresse "
-                "0x%02x) - Display bleibt deaktiviert. Laeuft evtl. noch "
-                "fpms.service parallel (setup_wlanmon_probe.sh ausgefuehrt)?",
+                "0x%02x) - Display bleibt deaktiviert. Steuert evtl. noch ein "
+                "anderer Dienst das Display an?",
                 i2c_port, i2c_address,
             )
             return False
@@ -203,7 +203,7 @@ class DisplayLoop(threading.Thread):
             except OSError:
                 log.exception(
                     "GPIO %d konnte nicht exportiert werden (evtl. noch von "
-                    "fpms.service belegt)", gpio,
+                    "einem anderen Dienst belegt)", gpio,
                 )
                 continue
             self._buttons.append(button)
