@@ -529,9 +529,12 @@ function handle_get_device_config(string $deviceId): void
         error_log("[wlanmon] Config für $deviceId: $failed Zugangsdaten nicht entschlüsselbar (secret_key fehlt oder falsch)");
         json_error(500, 'Zugangsdaten nicht entschlüsselbar - secret_key auf dem Server prüfen');
     }
+    // Standortname nur zur Anzeige auf der Probe (Log, OLED) - die Zuordnung
+    // selbst bleibt devices.site_id. Aeltere Probes verwerfen den Schluessel.
     json_response([
         'scan' => $config['scan'] ?? null,
         'connection_tests' => $config['connection_tests'] ?? null,
+        'site' => $device['site_name'] ?? null,
     ]);
 }
 

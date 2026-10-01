@@ -3,11 +3,11 @@ Konfigurationsverwaltung mit optionaler zentraler Verwaltung.
 
 Es gibt zwei Ebenen:
   - Bootstrap-Config (lokal, in config.yaml): alles, was nötig ist, um
-    überhaupt mit dem Server sprechen zu können (device.id, device.site,
+    überhaupt mit dem Server sprechen zu können (device.id,
     interface.name, server.*, queue.*, logging.*). Diese Werte werden
     NIE vom Server überschrieben.
-  - Remote-Config (optional, vom Server gezogen): scan.* und
-    connection_tests.* – also alles, was sich im laufenden Betrieb
+  - Remote-Config (optional, vom Server gezogen): scan.*,
+    connection_tests.* und der Standortname (site) – also alles, was sich im laufenden Betrieb
     zentral ändern lassen soll (Intervalle, Ziel-SSIDs, Ping-Ziel...).
     Wird lokal gecacht, damit der Client auch bei Serverausfall mit der
     zuletzt bekannten Konfiguration weiterläuft.
@@ -34,7 +34,10 @@ import yaml
 log = logging.getLogger("wlanmon_probe.config_manager")
 
 # Diese Top-Level-Keys dürfen vom Server zentral gesteuert werden.
-REMOTE_MANAGED_KEYS = ("scan", "connection_tests")
+# "site" ist nur der Standortname zur Anzeige (Log, OLED), vom Dashboard aus
+# devices.site_id abgeleitet - frueher stand er lokal als device.site in der
+# config.yaml und blieb nach einer Neuinstallation auf dem Vorlagenwert stehen.
+REMOTE_MANAGED_KEYS = ("scan", "connection_tests", "site")
 
 
 def load_bootstrap(path: str) -> dict:

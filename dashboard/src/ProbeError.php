@@ -48,6 +48,8 @@ function probe_error_part(array $c): ?string
             return __('WPA-Schlüsselaustausch fehlgeschlagen');
         case 'dhcp_timeout':
             return __('Kein DHCP-Lease erhalten (Timeout)') . probe_error_dhcp_detail($c);
+        case 'dhcp_client_missing':
+            return __('Kein DHCP-Client auf der Probe installiert (dhclient oder dhcpcd) – sudo apt install dhcpcd-base');
         case 'eap_config_invalid':
             return __('802.1X-Angaben unvollständig');
         case 'config_failed':
@@ -106,13 +108,13 @@ function probe_error_part(array $c): ?string
             return __('EAP erfolgreich, aber 4-Way-Handshake danach nicht abgeschlossen') . probe_error_waited($c);
         case 'eap_stalled_after_cert':
             return ($s('subject') !== ''
-                    ? __('Server-Zertifikat erhalten (%s), danach keine Antwort mehr vom RADIUS-Server (Phase 2 / innere Authentifizierung nicht abgeschlossen)', $s('subject'))
-                    : __('Server-Zertifikat erhalten, danach keine Antwort mehr vom RADIUS-Server (Phase 2 / innere Authentifizierung nicht abgeschlossen)'))
+                    ? __('Server-Zertifikat erhalten (%s), aber innere Authentifizierung (Phase 2) nicht abgeschlossen (RADIUS-Server antwortet zu langsam oder nicht mehr)', $s('subject'))
+                    : __('Server-Zertifikat erhalten, aber innere Authentifizierung (Phase 2) nicht abgeschlossen (RADIUS-Server antwortet zu langsam oder nicht mehr)'))
                 . probe_error_waited($c);
         case 'eap_stalled_method':
-            return __('EAP-Methode ausgehandelt, aber keine Antwort vom RADIUS-Server (TLS-Tunnel nicht aufgebaut)') . probe_error_waited($c);
+            return __('EAP-Methode ausgehandelt, aber TLS-Tunnel nicht aufgebaut (Server-Zertifikat nicht vollständig empfangen: RADIUS-Server antwortet zu langsam, unvollständig oder gar nicht)') . probe_error_waited($c);
         case 'eap_stalled_start':
-            return __('EAP gestartet, aber keine Methode ausgehandelt (RADIUS-Server antwortet nicht?)') . probe_error_waited($c);
+            return __('EAP gestartet, aber keine Methode ausgehandelt (RADIUS-Server antwortet zu langsam oder gar nicht)') . probe_error_waited($c);
 
         // --- Netz nicht gefunden / unpassend ---
         case 'ssid_not_found':

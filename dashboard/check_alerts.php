@@ -201,7 +201,7 @@ foreach (device_list() as $device) {
             continue;
         }
         $message = __('Gerät %s (Standort: %s): SSID „%s“ ist bei den letzten %d Connection-Tests in Folge fehlgeschlagen.', $deviceId, $site, (string) $ssid, $consecutiveFailures);
-        // Fehlertext des Probes (z.B. "keine Antwort vom RADIUS-Server")
+        // Fehlertext des Probes (z.B. "TLS-Tunnel nicht aufgebaut")
         // gleich mitschicken - spart den Blick ins Dashboard.
         if ($allFailing && $lastError[$ssid] !== '') {
             $error = $lastError[$ssid];

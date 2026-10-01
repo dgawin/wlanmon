@@ -4,8 +4,8 @@
 device:
   # Eindeutige ID dieses Probes (z.B. Hostname oder feste UUID)
   id: "wlanmon-probe-01"
-  # Frei wählbares Standort-/Kunden-Tag, taucht im Server-Dashboard auf
-  site: "kunde-musterfirma-standort-a"
+  # Der Standort wird im Dashboard zugeordnet (Geräte -> Standort) und mit der
+  # zentralen Konfiguration an die Probe übertragen (Anzeige in Log/OLED).
 
 interface:
   # Name des USB-WLAN-Interfaces (z.B. mit `iw dev` ermitteln)

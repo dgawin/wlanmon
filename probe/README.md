@@ -12,7 +12,9 @@ over HTTPS.
   interface (see [`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh))
 - USB Wi-Fi adapter (e.g. Comfast CF-953AX, driver `mt7921u`, kernel ≥ 5.19)
 - Root privileges (for `iw`, `wpa_supplicant`, `dhclient`)
-- Packages: `iw`, `wpasupplicant`, `isc-dhcp-client` (or `dhcpcd5`), `iputils-ping`,
+- Packages: `iw`, `wpasupplicant`, a DHCP client – `dhcpcd-base` (installed by
+  `setup_wlanmon_probe.sh` if neither client is present; minimal Armbian
+  images ship none) or `isc-dhcp-client` –, `iputils-ping`,
   `python3-venv`, optionally `iperf3`. `_run_dhcp()` in `wifi_ops.py` prefers
   `dhclient` and automatically falls back to `dhcpcd` if `dhclient` is not
   on the PATH (`shutil.which()`) – `_cleanup_connection()` mirrors the same
@@ -607,7 +609,7 @@ target, iperf3 server...) from the server instead of only reading them locally:
   individual threads and makes sure the scan/test loops never run with
   inconsistent half-old values.
 
-Bootstrap values (`device.id`, `device.site`, `interface.name`, `server.*`,
+Bootstrap values (`device.id`, `interface.name`, `server.*`,
 `queue.*`, `logging.*`) always stay local in `config.yaml` and are never
 overwritten by the server – otherwise a device could cut itself off from the
 server.
@@ -699,10 +701,11 @@ file is missing. Version scheme as in the dashboard (see its README, section
 `1.0.1.2`, ...), with the next release it is dropped again (`1.0.2`). Done by
 hand in the same commit, no automatic bump.
 
-`device.site` still exists in `config.yaml`, but since the site rework in the
-dashboard (assignment happens there via `devices.site_id`, managed by admins)
-it is no longer sent to the server – it is purely local, for the log line on
-startup and the OLED status (`display.py`).
+The site is assigned in the dashboard (`devices.site_id`, managed by admins).
+The central configuration also carries the site name (`site`), which the probe
+shows in its startup log line and on the OLED status (`display.py`); without a
+central configuration it stays empty. An old `device.site` entry in
+`config.yaml` is ignored.
 
 ## 802.1X / WPA2-Enterprise
 

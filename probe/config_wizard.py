@@ -342,6 +342,13 @@ def run(path: Path) -> int:
         bool(get(values, "watchdog.enabled", False)))
     answers["display.enabled"] = ask_yes(
         "Is a NanoHat OLED display with buttons attached?", bool(get(values, "display.enabled", False)))
+    i2c_port = get(values, "display.i2c_port", 0)
+    if answers["display.enabled"] and not Path(f"/dev/i2c-{i2c_port}").exists():
+        # Frisches Armbian: Overlay "i2c0" ist aus, das Display bleibt dann
+        # dunkel und der Dienst loggt nur "I2C device not found".
+        say(f"  {YEL}Warning: /dev/i2c-{i2c_port} does not exist - the I2C bus is not enabled. On Armbian add "
+            f"\"i2c{i2c_port}\" to the overlays= line in /boot/armbianEnv.txt (or use armbian-config) "
+            f"and reboot.{RST}")
 
     section("Summary")
     for key, value in answers.items():

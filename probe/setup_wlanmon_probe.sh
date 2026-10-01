@@ -192,11 +192,27 @@ chmod +x "$INSTALL_DIR/wlan_watchdog.sh"
 VENV_DIR="$INSTALL_DIR/venv"
 if [ ! -d "$VENV_DIR" ]; then
     log "Lege Python-venv unter $VENV_DIR an ..."
-    if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
+    # Ausgabe unterdruecken: ohne python3-venv (minimales Armbian) meldet
+    # venv sonst eine lange "ensurepip is not available"-Fehlermeldung,
+    # obwohl das Skript das Paket gleich selbst nachinstalliert. Das halb
+    # angelegte venv vor dem zweiten Versuch wegraeumen.
+    if ! python3 -m venv "$VENV_DIR" >/dev/null 2>&1; then
         log "python3-venv fehlt - installiere nach ..."
+        rm -rf "$VENV_DIR"
         apt-get update -qq && apt-get install -y -qq python3-venv
         python3 -m venv "$VENV_DIR"
     fi
+fi
+# DHCP-Client fuer die Connection-Tests: minimales Armbian (Trixie) hat weder
+# dhclient noch dhcpcd. dhcpcd-base bringt nur das Programm, keinen eigenen
+# Dienst, der dem Probe das Test-Interface streitig machen wuerde; dhclient
+# (isc-dhcp-client) ist in Debian abgekuendigt und macht auf Raspberry Pi OS
+# Probleme (DHCPDECLINE, siehe README).
+if ! command -v dhclient >/dev/null 2>&1 && ! command -v dhcpcd >/dev/null 2>&1; then
+    log "Installiere DHCP-Client (dhcpcd-base) ..."
+    apt-get install -y -qq dhcpcd-base >/dev/null 2>&1 \
+        || { apt-get update -qq && apt-get install -y -qq dhcpcd-base; } \
+        || log "WARNUNG: kein DHCP-Client installierbar - Connection-Tests schlagen fehl (dhclient oder dhcpcd noetig)."
 fi
 # tcpdump fuer den Mitschnitt fehlgeschlagener Connection-Tests (pcap, siehe
 # FailureCapture in wifi_ops.py). Ohne laeuft alles weiter, nur ohne pcap.

@@ -582,11 +582,10 @@ def main() -> None:
     ensure_regdomain(_country(cfg))
 
     device_id = cfg["device"].get("id") or socket.gethostname()
-    # Nur noch lokal genutzt (Log-Zeile unten, OLED-Status in display.py) -
-    # das Dashboard wertet "site" seit dem Standort-Umbau dort nicht mehr
-    # aus (Zuordnung laeuft ueber devices.site_id, Admin-verwaltet), wird
-    # deshalb nicht mehr an den Sender uebergeben.
-    site = cfg["device"].get("site", "")
+    # Standortname nur zur Anzeige (Log-Zeile unten, OLED-Status in
+    # display.py), kommt mit der Remote-Config vom Dashboard (devices.site_id).
+    # Ohne Remote-Config oder ohne zugeordneten Standort leer.
+    site = cfg.get("site") or ""
     probe_version = _read_version()
 
     store = QueueStore(

@@ -995,27 +995,30 @@ def _wpa_error_summary(log_path: str, waited: float | None = None) -> tuple[str,
 
 def _eap_stall_summary(text: str) -> tuple[str, dict] | None:
     """EAP hat begonnen, aber weder Erfolg noch Fehlschlag gemeldet - der
-    Austausch ist irgendwo haengen geblieben (meist antwortet der RADIUS-
-    Server nicht mehr). Sagt, wie weit er gekommen ist: (Text, Fehlercode)."""
+    Austausch ist irgendwo haengen geblieben. Sagt, wie weit er gekommen ist:
+    (Text, Fehlercode). Bewusst nicht "keine Antwort": im pcap eines solchen
+    Falls (PEAP, 2026-10-01) kamen Server-TLS-Fragmente, nur mit 3-7 s Pause
+    und unvollstaendig (2.980 von 10.019 Byte) - ohne "-d" loggt wpa_supplicant
+    die Fragmente nicht, langsam und stumm sind hier nicht unterscheidbar."""
     if "CTRL-EVENT-EAP-SUCCESS" in text:
         return "EAP erfolgreich, aber 4-Way-Handshake danach nicht abgeschlossen", {"code": "eap_no_4way"}
     cert = re.search(r"CTRL-EVENT-EAP-PEER-CERT depth=0 subject='([^']*)'", text)
     if cert or "CTRL-EVENT-EAP-PEER-CERT" in text:
         subject = cert.group(1) if cert and cert.group(1) else None
         return (
-            f"Server-Zertifikat erhalten{f' ({subject})' if subject else ''}, danach keine Antwort mehr vom "
-            "RADIUS-Server (Phase 2 / innere Authentifizierung nicht abgeschlossen)",
+            f"Server-Zertifikat erhalten{f' ({subject})' if subject else ''}, aber innere Authentifizierung "
+            "(Phase 2) nicht abgeschlossen (RADIUS-Server antwortet zu langsam oder nicht mehr)",
             {"code": "eap_stalled_after_cert", "subject": subject},
         )
     if "CTRL-EVENT-EAP-METHOD" in text:
         return (
-            "EAP-Methode ausgehandelt, aber keine Antwort vom RADIUS-Server "
-            "(TLS-Tunnel nicht aufgebaut)",
+            "EAP-Methode ausgehandelt, aber TLS-Tunnel nicht aufgebaut (Server-Zertifikat nicht "
+            "vollständig empfangen: RADIUS-Server antwortet zu langsam, unvollständig oder gar nicht)",
             {"code": "eap_stalled_method"},
         )
     if "CTRL-EVENT-EAP-STARTED" in text:
         return (
-            "EAP gestartet, aber keine Methode ausgehandelt (RADIUS-Server antwortet nicht?)",
+            "EAP gestartet, aber keine Methode ausgehandelt (RADIUS-Server antwortet zu langsam oder gar nicht)",
             {"code": "eap_stalled_start"},
         )
     return None
@@ -1242,6 +1245,13 @@ def run_connection_test(
         _disable_power_save(interface)
         t1 = time.monotonic()
         counters_dhcp_before = _read_counters(interface)
+        if not (shutil.which("dhclient") or shutil.which("dhcpcd")):
+            # Minimales Armbian (Trixie) bringt keinen von beiden mit - ohne
+            # diese Pruefung meldete jeder Test nach ~1 s "Kein DHCP-Lease
+            # (Timeout)", obwohl gar keine Anfrage rausging (2026-10-01).
+            result.error = "Kein DHCP-Client installiert (dhclient oder dhcpcd) - sudo apt install dhcpcd-base"
+            result.error_codes = [_err("dhcp_client_missing")]
+            return result
         ip_addr = _run_dhcp(interface, timeout=connect_timeout)
         if not ip_addr:
             # Der Link steht (Assoziation/802.1X waren erfolgreich), im Netz
