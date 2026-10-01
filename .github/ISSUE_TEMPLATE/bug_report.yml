@@ -1,0 +1,43 @@
+name: Bug Report
+description: Report a problem with WLANMON
+title: '[Bug]: '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve WLANMON!
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: '1. Open...\n2. Configure...\n3. Observe...'
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: WLANMON version or commit
+  - type: input
+    id: environment
+    attributes:
+      label: Hardware and operating system
+      placeholder: Raspberry Pi 5, Raspberry Pi OS
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove passwords, tokens and personal data.
+      render: shell
