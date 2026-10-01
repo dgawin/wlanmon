@@ -186,41 +186,46 @@ mkdir -p "$INSTALL_DIR/portals"
 cp "$SCRIPT_DIR"/portals/*.py "$INSTALL_DIR/portals/"
 chmod +x "$INSTALL_DIR/wlan_watchdog.sh"
 
+# Systempakete in einem Schritt - vorab braucht es nur git (zum Klonen).
+# Fehlt nichts, wird auch kein "apt-get update" ausgefuehrt.
+#   iw, wpasupplicant  WLAN-Steuerung der Tests
+#   dhcpcd-base        DHCP-Client, nur wenn weder dhclient noch dhcpcd da ist
+#                      (minimales Armbian Trixie hat keinen). Nur das Programm,
+#                      kein eigener Dienst, der der Probe das Test-Interface
+#                      streitig macht; dhclient (isc-dhcp-client) ist in Debian
+#                      abgekuendigt und macht auf Raspberry Pi OS Probleme
+#                      (DHCPDECLINE, siehe README).
+#   iperf3             Durchsatzmessung (WLAN und LAN)
+#   iputils-ping       Ping-Test nach dem Verbindungsaufbau
+#   tcpdump            pcap fehlgeschlagener Tests (FailureCapture in wifi_ops.py)
+#   python3-venv       eigenes venv, siehe unten
+PKGS=()
+command -v iw >/dev/null 2>&1 || PKGS+=(iw)
+command -v wpa_supplicant >/dev/null 2>&1 || PKGS+=(wpasupplicant)
+command -v dhclient >/dev/null 2>&1 || command -v dhcpcd >/dev/null 2>&1 || PKGS+=(dhcpcd-base)
+command -v iperf3 >/dev/null 2>&1 || PKGS+=(iperf3)
+command -v ping >/dev/null 2>&1 || PKGS+=(iputils-ping)
+command -v tcpdump >/dev/null 2>&1 || PKGS+=(tcpdump)
+# python3 -m venv scheitert ohne ensurepip erst mittendrin (und mit langer
+# Fehlermeldung) - daher vorher pruefen.
+python3 -c "import ensurepip" >/dev/null 2>&1 || PKGS+=(python3-venv)
+if [ "${#PKGS[@]}" -gt 0 ]; then
+    log "Installiere Pakete: ${PKGS[*]} ..."
+    # noninteractive: iperf3 fragt sonst per debconf, ob es als Dienst laufen
+    # soll (Standard: nein - die Probe ist nur Client).
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PKGS[@]}"
+else
+    log "Alle benoetigten Pakete vorhanden."
+fi
+
 # Debian/Ubuntu ab Python 3.11 verweigern system-weite "pip install"
 # (PEP 668, "externally-managed-environment") - daher eigenes venv statt
 # --break-system-packages, das laesst das System-Python unangetastet.
 VENV_DIR="$INSTALL_DIR/venv"
 if [ ! -d "$VENV_DIR" ]; then
     log "Lege Python-venv unter $VENV_DIR an ..."
-    # Ausgabe unterdruecken: ohne python3-venv (minimales Armbian) meldet
-    # venv sonst eine lange "ensurepip is not available"-Fehlermeldung,
-    # obwohl das Skript das Paket gleich selbst nachinstalliert. Das halb
-    # angelegte venv vor dem zweiten Versuch wegraeumen.
-    if ! python3 -m venv "$VENV_DIR" >/dev/null 2>&1; then
-        log "python3-venv fehlt - installiere nach ..."
-        rm -rf "$VENV_DIR"
-        apt-get update -qq && apt-get install -y -qq python3-venv
-        python3 -m venv "$VENV_DIR"
-    fi
-fi
-# DHCP-Client fuer die Connection-Tests: minimales Armbian (Trixie) hat weder
-# dhclient noch dhcpcd. dhcpcd-base bringt nur das Programm, keinen eigenen
-# Dienst, der dem Probe das Test-Interface streitig machen wuerde; dhclient
-# (isc-dhcp-client) ist in Debian abgekuendigt und macht auf Raspberry Pi OS
-# Probleme (DHCPDECLINE, siehe README).
-if ! command -v dhclient >/dev/null 2>&1 && ! command -v dhcpcd >/dev/null 2>&1; then
-    log "Installiere DHCP-Client (dhcpcd-base) ..."
-    apt-get install -y -qq dhcpcd-base >/dev/null 2>&1 \
-        || { apt-get update -qq && apt-get install -y -qq dhcpcd-base; } \
-        || log "WARNUNG: kein DHCP-Client installierbar - Connection-Tests schlagen fehl (dhclient oder dhcpcd noetig)."
-fi
-# tcpdump fuer den Mitschnitt fehlgeschlagener Connection-Tests (pcap, siehe
-# FailureCapture in wifi_ops.py). Ohne laeuft alles weiter, nur ohne pcap.
-if ! command -v tcpdump >/dev/null 2>&1; then
-    log "Installiere tcpdump (Mitschnitt fehlgeschlagener Tests) ..."
-    apt-get install -y -qq tcpdump >/dev/null 2>&1 \
-        || { apt-get update -qq && apt-get install -y -qq tcpdump; } \
-        || log "tcpdump liess sich nicht installieren - Mitschnitte dann ohne pcap."
+    python3 -m venv "$VENV_DIR"
 fi
 
 "$VENV_DIR/bin/pip" install --upgrade pip -q

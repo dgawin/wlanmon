@@ -12,10 +12,10 @@ over HTTPS.
   interface (see [`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh))
 - USB Wi-Fi adapter (e.g. Comfast CF-953AX, driver `mt7921u`, kernel ≥ 5.19)
 - Root privileges (for `iw`, `wpa_supplicant`, `dhclient`)
-- Packages: `iw`, `wpasupplicant`, a DHCP client – `dhcpcd-base` (installed by
-  `setup_wlanmon_probe.sh` if neither client is present; minimal Armbian
-  images ship none) or `isc-dhcp-client` –, `iputils-ping`,
-  `python3-venv`, optionally `iperf3`. `_run_dhcp()` in `wifi_ops.py` prefers
+- Packages: `iw`, `wpasupplicant`, a DHCP client (`dhcpcd-base` or
+  `isc-dhcp-client`; minimal Armbian images ship none), `iputils-ping`,
+  `python3-venv`, `iperf3`, `tcpdump` – `setup_wlanmon_probe.sh` installs
+  whatever is missing, only `git` is needed beforehand. `_run_dhcp()` in `wifi_ops.py` prefers
   `dhclient` and automatically falls back to `dhcpcd` if `dhclient` is not
   on the PATH (`shutil.which()`) – `_cleanup_connection()` mirrors the same
   choice, so the lease is always released by the client that was actually
@@ -66,9 +66,13 @@ over HTTPS.
 ## Installation
 
 Automated (recommended, see [`setup_wlanmon_probe.sh`](setup_wlanmon_probe.sh)
-for details and prerequisites):
+for details). Only `git` is needed beforehand – the script installs all other
+packages it needs:
 
 ```bash
+sudo apt install -y git
+git clone https://github.com/dgawin/wlanmon.git ~/wlanmon
+cd ~/wlanmon/probe
 sudo ./setup_wlanmon_probe.sh
 ```
 

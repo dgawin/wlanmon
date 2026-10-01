@@ -24,9 +24,11 @@ Website: [wlanmon.com](https://wlanmon.com)
    [dashboard/README.md, section "Docker"](dashboard/README.md#docker).
 2. Add a device in the dashboard; it gives you the ready-made `server`
    configuration including the API key for the probe.
-3. Set up the probe:
+3. Set up the probe (only `git` is needed beforehand, the setup script
+   installs everything else):
 
    ```bash
+   sudo apt install -y git
    git clone https://github.com/dgawin/wlanmon.git ~/wlanmon
    cd ~/wlanmon/probe
    sudo ./setup_wlanmon_probe.sh
