@@ -10,6 +10,8 @@ and test connections to configured SSIDs (association, DHCP, reachability,
 optionally iperf3). The results end up in a central web dashboard with
 history, spectrum view and alerting.
 
+Website: [wlanmon.com](https://wlanmon.com)
+
 | Folder | Contents |
 |---|---|
 | [`probe/`](probe/) | Probe client (Python) for the measurement devices, including setup script and auto-update – see [probe/README.md](probe/README.md) |
