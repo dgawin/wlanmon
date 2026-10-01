@@ -70,10 +70,17 @@ for details). Only `git` is needed beforehand – the script installs all other
 packages it needs:
 
 ```bash
-sudo apt install -y git
-git clone https://github.com/dgawin/wlanmon.git ~/wlanmon
-cd ~/wlanmon/probe
+sudo apt update && sudo apt install -y git
+git clone https://github.com/dgawin/wlanmon.git ~/wlanmon && cd ~/wlanmon/probe
 sudo ./setup_wlanmon_probe.sh
+```
+
+On the very first run the script switches to classic interface names
+(`net.ifnames=0`), which needs a reboot. Then start the wizard yourself:
+
+```bash
+sudo reboot
+sudo wlanmon setup
 ```
 
 The script installs everything and then starts a **setup wizard**
@@ -92,9 +99,16 @@ from the dashboard at hand (Devices -> add device). The wizard asks for:
 It only changes these values in `/etc/wlanmon-probe/config.yaml`; comments and
 all other settings stay as they are, and a backup is kept. Run it again any
 time with `sudo wlanmon setup` – current values are offered as defaults.
-`--no-wizard` skips it for unattended installs; on the very first run, which
-switches to classic interface names (`net.ifnames=0`), the wizard follows
-after the required reboot.
+`--no-wizard` skips it for unattended installs. On later runs (no reboot
+needed) the script starts the wizard right away.
+
+**OLED display (NanoHat OLED):** the I2C bus must be enabled, otherwise the
+display stays dark (the wizard warns if `/dev/i2c-0` is missing). On Armbian
+add the overlay `i2c0` and reboot:
+
+```bash
+grep -q '^overlays=' /boot/armbianEnv.txt && sudo sed -i '/^overlays=/{/i2c0/!s/$/ i2c0/}' /boot/armbianEnv.txt || echo 'overlays=i2c0' | sudo tee -a /boot/armbianEnv.txt
+```
 
 Manually:
 

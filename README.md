@@ -28,9 +28,8 @@ Website: [wlanmon.com](https://wlanmon.com)
    installs everything else):
 
    ```bash
-   sudo apt install -y git
-   git clone https://github.com/dgawin/wlanmon.git ~/wlanmon
-   cd ~/wlanmon/probe
+   sudo apt update && sudo apt install -y git
+   git clone https://github.com/dgawin/wlanmon.git ~/wlanmon && cd ~/wlanmon/probe
    sudo ./setup_wlanmon_probe.sh
    ```
 
