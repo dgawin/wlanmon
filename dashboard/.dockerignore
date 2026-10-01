@@ -1,0 +1,7 @@
+.git
+.github
+# Echte Konfiguration mit Secrets gehört nie ins Image (docker/config.php
+# liest stattdessen Umgebungsvariablen).
+config.php
+.env
+docker-compose.override.yml

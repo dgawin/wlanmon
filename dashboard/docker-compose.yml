@@ -1,0 +1,106 @@
+# WLANMON-Dashboard als eigenständige Instanz (z.B. Standort-"Insel"), siehe
+# README, Abschnitt "Docker". Gedacht als Portainer-Stack direkt aus diesem
+# Git-Repo (Build aus dem Repo, keine Host-Dateien nötig); die Werte unten
+# kommen aus den Stack-Umgebungsvariablen (bzw. einer .env-Datei).
+#
+# Pflicht:   WLANMON_DOMAIN, WLANMON_DB_PASSWORD, WLANMON_ADMIN_PASSWORD
+# Empfohlen: WLANMON_SECRET_KEY (Verschlüsselung der Zugangsdaten, erzeugen mit
+#            php tools/secrets.php generate-key, getrennt vom Backup aufbewahren)
+# Optional:  WLANMON_ZABBIX_TOKEN, WLANMON_CIRRUS_*, WLANMON_CADDY_FLAGS,
+#            WLANMON_HTTP_PORT / WLANMON_HTTPS_PORT
+
+x-app-env: &app-env
+  WLANMON_DB_HOST: db
+  WLANMON_DB_NAME: wlanmon
+  WLANMON_DB_USER: wlanmon
+  WLANMON_DB_PASSWORD: ${WLANMON_DB_PASSWORD:?WLANMON_DB_PASSWORD setzen}
+  WLANMON_ADMIN_USER: ${WLANMON_ADMIN_USER:-admin}
+  WLANMON_ADMIN_PASSWORD: ${WLANMON_ADMIN_PASSWORD:?WLANMON_ADMIN_PASSWORD setzen}
+  WLANMON_ZABBIX_TOKEN: ${WLANMON_ZABBIX_TOKEN:-}
+  WLANMON_SECRET_KEY: ${WLANMON_SECRET_KEY:-}
+  WLANMON_CIRRUS_BASE_URL: ${WLANMON_CIRRUS_BASE_URL:-https://eu.manage.ovcirrus.com}
+  WLANMON_CIRRUS_ORG_ID: ${WLANMON_CIRRUS_ORG_ID:-}
+  WLANMON_CIRRUS_APP_ID: ${WLANMON_CIRRUS_APP_ID:-}
+  WLANMON_CIRRUS_APP_SECRET: ${WLANMON_CIRRUS_APP_SECRET:-}
+  WLANMON_CIRRUS_EMAIL: ${WLANMON_CIRRUS_EMAIL:-}
+  WLANMON_CIRRUS_PASSWORD: ${WLANMON_CIRRUS_PASSWORD:-}
+  TZ: Europe/Berlin
+
+services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: wlanmon
+      MARIADB_USER: wlanmon
+      MARIADB_PASSWORD: ${WLANMON_DB_PASSWORD:?WLANMON_DB_PASSWORD setzen}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      TZ: Europe/Berlin
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Weboberfläche + Probe-API. Nur im Docker-Netz erreichbar, nach außen
+  # geht alles über den Proxy (TLS).
+  web:
+    build: .
+    image: wlanmon-dashboard:local
+    pull_policy: build
+    restart: unless-stopped
+    environment: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Ersetzt die Cronjobs (Alerting alle 5 min, Cirrus-Sync stündlich).
+  # Eigener build statt nur image: sonst versuchte Compose, das Image vor dem
+  # Build aus einer Registry zu ziehen. Der zweite Build kommt aus dem Cache.
+  cron:
+    build: .
+    image: wlanmon-dashboard:local
+    pull_policy: build
+    restart: unless-stopped
+    command: ["/var/www/html/docker/cron.sh"]
+    environment: *app-env
+    # Nächtliche DB-Backups (backup_db.php), am besten zusätzlich extern sichern.
+    volumes:
+      - backups:/var/backups/wlanmon
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+  # TLS-Proxy. Mit einem öffentlich auflösbaren Namen holt Caddy automatisch
+  # ein Let's-Encrypt-Zertifikat (Ports 80/443 aus dem Internet erreichbar).
+  # Für eine interne Insel WLANMON_CADDY_FLAGS=--internal-certs setzen: dann
+  # stellt Caddys eigene CA das Zertifikat aus - deren Root-Zertifikat
+  # (/data/caddy/pki/authorities/local/root.crt im Volume caddy-data) bekommen
+  # die Probes als verify_tls-Pfad, siehe README.
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec caddy reverse-proxy --from "$$WLANMON_DOMAIN" --to web:80 $$WLANMON_CADDY_FLAGS
+    environment:
+      WLANMON_DOMAIN: ${WLANMON_DOMAIN:?WLANMON_DOMAIN setzen (Name oder IP, unter dem Probes/Browser das Dashboard erreichen)}
+      WLANMON_CADDY_FLAGS: ${WLANMON_CADDY_FLAGS:-}
+    ports:
+      - "${WLANMON_HTTP_PORT:-80}:80"
+      - "${WLANMON_HTTPS_PORT:-443}:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web
+
+volumes:
+  db-data:
+  backups:
+  caddy-data:
+  caddy-config:

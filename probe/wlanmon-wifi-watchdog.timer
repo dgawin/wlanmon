@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodischer WLAN-Watchdog-Check fuer wlanmon-probe
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

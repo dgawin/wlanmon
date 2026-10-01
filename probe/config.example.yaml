@@ -1,0 +1,232 @@
+# Konfiguration für den WLANMON-Probe-Client
+# Kopieren nach /etc/wlanmon-probe/config.yaml und anpassen
+
+device:
+  # Eindeutige ID dieses Probes (z.B. Hostname oder feste UUID)
+  id: "wlanmon-probe-01"
+  # Frei wählbares Standort-/Kunden-Tag, taucht im Server-Dashboard auf
+  site: "kunde-musterfirma-standort-a"
+
+interface:
+  # Name des USB-WLAN-Interfaces (z.B. mit `iw dev` ermitteln)
+  name: "wlan1"
+  # Ländereinstellung (Regulatory Domain) als zweistelliger Ländercode,
+  # z.B. "DE", "AT", "CH", "NL", "US". Legt erlaubte Kanäle und
+  # Sendeleistung fest. Ohne Land ("country 00") darf der Adapter auf 5 GHz
+  # nur passiv scannen und auf den Kanälen 12/13 keine Verbindung aufbauen.
+  # Die Probe setzt sie beim Start und prüft sie vor jedem Scan.
+  # Leer oder "00" = Systemeinstellung nicht anfassen. Fehlt der Eintrag,
+  # gilt "DE".
+  country: "DE"
+
+server:
+  # Basis-URL der Server-API (immer HTTPS im produktiven Einsatz!)
+  url: "https://wlanmon.example.com/api/v1"
+  # API-Key für dieses Gerät (vom Server beim Onboarding vergeben)
+  api_key: "CHANGE-ME"
+  # TLS-Zertifikatsprüfung. Im Feldeinsatz nur mit gutem Grund deaktivieren.
+  verify_tls: true
+  # Timeout pro HTTP-Request in Sekunden
+  request_timeout: 10
+
+remote_config:
+  # Wenn aktiviert, werden die Blöcke "scan" und "connection_tests" unten
+  # nur als Fallback verwendet (erster Start ohne Server-Kontakt bzw.
+  # falls der Server dauerhaft nicht erreichbar ist und auch kein lokaler
+  # Cache existiert). Im Normalbetrieb kommen diese Werte vom Server über
+  # GET <server.url>/devices/<device_id>/config und werden zentral im
+  # Web-Dashboard gepflegt.
+  enabled: true
+  poll_interval_seconds: 300
+  cache_path: "/var/lib/wlanmon-probe/remote_config_cache.yaml"
+
+scan:
+  # Nur Fallback-Wert, siehe remote_config oben.
+  # Wie oft ein reiner Scan (alle sichtbaren SSIDs/BSSIDs) durchgeführt wird
+  interval_seconds: 60
+
+connection_tests:
+  # Nur Fallback-Werte, siehe remote_config oben.
+  # Wie oft der komplette Satz an Verbindungstests durchlaufen wird
+  interval_seconds: 900
+  # Timeout für Assoziation + DHCP in Sekunden, bevor ein Test als "failed" gilt
+  connect_timeout_seconds: 30
+  # Letzter Fallback für den Ping-Test nach erfolgreichem Connect. Je Ziel-SSID
+  # gilt sonst "ping_target" (siehe targets); ist dort nichts eingetragen, wird
+  # das Default-Gateway des Netzes gepingt.
+  ping_target: "1.1.1.1"
+  ping_count: 5
+  # Detection-URL fuer die Captive-Portal-Erkennung. Aktiviert wird sie je
+  # Ziel-SSID ueber "captive_portal_check: true" (siehe targets). Die URL
+  # muss per Klartext-HTTP erreichbar sein und ohne Portal HTTP 204 liefern;
+  # ein Redirect oder Portal-HTML gilt als Portal. Leer = dieser Standard.
+  # Hinweis: Portale merken sich oft die MAC nach dem ersten Login - dann
+  # meldet die Probe "kein Portal", obwohl das Netz eines hat.
+  captive_portal_url: "http://connectivitycheck.gstatic.com/generate_204"
+
+  # Standard-iperf3-Server/-Dauer/-Port (leerer Server = iperf3 standardmaessig
+  # deaktiviert). Gilt nur als Fallback fuer Ziele, die unten keine eigenen
+  # iperf3_server/iperf3_duration_seconds/iperf3_port eintragen - z.B. wenn
+  # eine SSID in ein anderes VLAN mit eigenem iperf3-Server/-Port fuehrt.
+  # iperf3_enabled/iperf3_download stehen komplett je Ziel-SSID (s. targets).
+  iperf3_server: ""
+  iperf3_duration_seconds: 5
+  iperf3_port: 5201
+  # iperf3 je SSID hoechstens alle N Minuten (0 = bei jedem Test).
+  # Verbindung, DHCP, Ping und Portal-Check laufen weiter in jedem Zyklus;
+  # nur die Durchsatzmessung wird seltener, sonst zeigt der Verlauf im
+  # Dashboard vor allem die eigene Last. Taste 3 am Display misst immer mit.
+  iperf3_min_interval_minutes: 60
+
+  # Optional: iperf3 ueber die kabelgebundene Schnittstelle (Upload und
+  # Download), einmal pro Testzyklus, unabhaengig von den Ziel-SSIDs.
+  # Braucht auf dem Dashboard-Server das aktualisierte Schema (kind
+  # "lan_test"), siehe schema.sql.
+  iperf3_lan:
+    enabled: false
+    server: "192.168.1.251"
+    interface: "eth0"
+    duration_seconds: 5
+    port: 5201
+
+  # Liste der Netze, die getestet werden sollen
+  targets:
+    - ssid: "Firmennetz-Corp"
+      psk: "CHANGE-ME"
+      # "open", "wpa2-psk" (default), "wpa3-psk" (reines WPA3-Personal/SAE),
+      # "wpa2-wpa3-psk" (Mixed-/Transition-Mode, z.B. Fritz!Box-Standard),
+      # "wpa2-eap" (802.1X, siehe Block "eap" im Beispiel unten)
+      security: "wpa2-psk"
+    - ssid: "Firmennetz-Guest"
+      psk: ""
+      security: "open"
+      captive_portal_check: true   # Captive Portal fuer diese SSID pruefen
+      ping_target: ""              # leer = Default-Gateway dieses Netzes
+      iperf3_enabled: true         # false = iperf3 fuer diese SSID ueberspringen
+      # Eigener iperf3-Server/-Dauer/-Port nur noetig, wenn diese SSID in ein
+      # anderes VLAN mit eigenem iperf3-Server fuehrt - leer/0 = Standard
+      # aus connection_tests.iperf3_server/-duration/-port oben verwenden.
+      iperf3_server: ""
+      iperf3_duration_seconds: 0
+      iperf3_port: 0
+      # Nach dem Upload zusaetzlich den Download messen (verlaengert den
+      # Test um iperf3_duration_seconds) - je SSID, Standard an.
+      iperf3_download: true
+      # Ratenbegrenzung in Mbit/s (iperf3 -b), 0 = ohne. Unbegrenzt lastet
+      # der Test den Kanal fuer seine Dauer voll aus (im Dashboard-Verlauf
+      # als Last-Zeitraum markiert); begrenzt prueft er, ob die Rate stabil
+      # erreicht wird, und stoert andere Nutzer kaum.
+      iperf3_bitrate_mbps: 0
+      random_mac: true             # pro Test zufaellige MAC (Portale erscheinen jedes Mal)
+      # Automatischer Login am Captive Portal. Danach laufen Ping/iperf3;
+      # ohne erfolgreichen Login werden sie uebersprungen.
+      captive_portal_login:
+        enabled: true
+        type: "auto"                 # "auto" (per Redirect erkennen) oder z.B. "cirrus"
+        username: ""                 # leer bei Portalen mit nur Nutzungsbedingungen
+        password: ""                 # bei Access-Code-Portalen: der Code
+        logoff: true                 # Sitzung nach dem Test abmelden
+    # 802.1X / WPA2-Enterprise (normalerweise ueber das Dashboard gepflegt;
+    # Zertifikate/Schluessel stehen als PEM-Text direkt in der Config):
+    # - ssid: "Firmennetz-Dot1x"
+    #   security: "wpa2-eap"
+    #   eap:
+    #     method: "peap"              # "peap", "ttls" oder "tls"
+    #     identity: "probe01@example.com"
+    #     anonymous_identity: ""      # optional, aeussere Identitaet
+    #     password: "CHANGE-ME"       # bei peap/ttls
+    #     phase2: "MSCHAPV2"          # peap: MSCHAPV2; ttls: PAP (Standard), MSCHAPV2, MSCHAP, CHAP
+    #     ca_cert: |                  # optional; mit CA wird der RADIUS-Server geprueft
+    #       -----BEGIN CERTIFICATE-----
+    #       ...
+    #       -----END CERTIFICATE-----
+    #     server_name: ""             # optional: erwarteter Servername im Zertifikat
+    #     verify_server: true         # false = Server-Zertifikat nie pruefen
+    #     # nur bei method: tls
+    #     client_cert: |
+    #       -----BEGIN CERTIFICATE-----
+    #       ...
+    #     private_key: |
+    #       -----BEGIN PRIVATE KEY-----
+    #       ...
+    #     private_key_password: ""
+
+queue:
+  # Lokale SQLite-Datei für die Zwischenspeicherung bei Serverausfall
+  db_path: "/var/lib/wlanmon-probe/queue.db"
+  # Wie oft versucht wird, die Queue an den Server zu senden
+  flush_interval_seconds: 15
+  # Maximale Anzahl Einträge pro Sende-Batch
+  batch_size: 50
+  # Ab dieser Anzahl ungesendeter Einträge werden alte Einträge verworfen
+  # (Schutz gegen vollaufende Disk bei langem Serverausfall)
+  max_queue_size: 100000
+
+logging:
+  level: "INFO"
+  file: "/var/log/wlanmon-probe/probe.log"
+
+display:
+  # OLED-Display + 3 Hardware-Buttons der NanoHat OLED (siehe README.md,
+  # Abschnitt "Display & Buttons"). Auf false lassen, wenn kein Display
+  # verbaut ist oder die Bibliotheken (luma.oled/luma.core) fehlen -
+  # das Skript läuft dann ohne Display unverändert weiter.
+  enabled: false
+  i2c_port: 0
+  i2c_address: 0x3c
+  # Panel-Auflösung: 128x64 ist der übliche Standard, manche NanoHat-OLED-
+  # Revisionen haben aber ein 128x32-Panel. Erkennbar daran, dass beim
+  # ersten Start nur die obere Hälfte korrekt/der Rest verzerrt aussieht -
+  # in dem Fall hier auf 32 wechseln.
+  width: 128
+  height: 64
+  # sysfs-GPIO-Nummern der 3 Taster (bestätigt über den bisherigen
+  # FPMS-Quelltext: gpio_d0=0, gpio_d1=2, gpio_d2=3).
+  # Reihenfolge = [vorheriger Screen, nächster Screen, sofortiger Test].
+  button_gpios: [0, 2, 3]
+  # Display nach so vielen Sekunden ohne Tastendruck abschalten (OLEDs
+  # brennen bei dauerhaft statischem Bild ein). Jede Taste weckt es wieder
+  # auf; dieser erste Druck wird dabei nicht als Aktion gewertet.
+  # 0 = Display immer an.
+  sleep_after_seconds: 120
+  # Interface, dessen IP auf dem Status-Screen angezeigt wird - die feste
+  # Management-Schnittstelle (üblicherweise das Ethernet-Interface),
+  # NICHT interface.name (das WLAN-Testinterface, dessen IP während
+  # eines Connection-Tests kommt und geht und zudem im selben Subnetz
+  # wie eth0 hängen kann, siehe ARP-Flux-Hinweis oben).
+  management_interface: "eth0"
+
+watchdog:
+  # Rebootet das Gerät automatisch, wenn interface.name laenger als
+  # missing_threshold_minutes komplett aus dem Kernel verschwunden ist
+  # (siehe README.md, Abschnitt "USB-Hotplug-Einschränkung"). Notwendig,
+  # weil der mt7921u-USB-WLAN-Treiber nach einem Hot-Unplug/-Replug oft
+  # nicht von selbst zurückkommt - nur ein Neustart bringt ihn zuverlässig
+  # zurück. Läuft als eigener systemd-Timer, unabhängig vom
+  # wlanmon-probe-Service selbst (siehe wlan_watchdog.sh).
+  enabled: false
+  missing_threshold_minutes: 10
+
+auto_update:
+  # Prueft alle 15 Minuten (siehe wlanmon-probe-update.timer), ob im
+  # Git-Repo eine neuere Version vorliegt (git fetch + rev-parse), und
+  # installiert sie automatisch: git pull --ff-only -> Dateien nach
+  # /opt/wlanmon-probe/ kopieren -> pip install -> Dienst neu starten
+  # (siehe update_probe.py). Laeuft als eigener systemd-Timer, unabhaengig
+  # vom wlanmon-probe-Service selbst.
+  #
+  # Sicherheitshinweis: das fuehrt automatisch aus, was auf "branch" liegt
+  # - nur aktivieren, wenn dieser Branch tatsaechlich nur Freigegebenes
+  # enthaelt. --ff-only verweigert sich bei lokalen Aenderungen im
+  # Checkout statt etwas zu ueberschreiben; ein fehlendes/ungueltiges
+  # repo_dir bricht ebenfalls nur folgenlos ab (siehe update_probe.py).
+  enabled: false
+  # Pfad zum lokalen Git-Checkout (z.B. "git clone
+  # https://github.com/dgawin/wlanmon.git, Probe liegt
+  # im Unterordner probe/"). setup_wlanmon_probe.sh
+  # traegt hier automatisch das Verzeichnis ein, aus dem es selbst
+  # aufgerufen wurde.
+  repo_dir: "/home/pi/wlanmon/probe"
+  # "stable" statt "main": ein Commit geht erst live, wenn er bewusst von
+  # main nach stable gemerged wird (siehe README, "Automatische Updates").
+  branch: "stable"

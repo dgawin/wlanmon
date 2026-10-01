@@ -1,0 +1,15 @@
+RewriteEngine On
+
+# Authorization-Header durchreichen. Bei manchen PHP/Apache-Setups
+# (v.a. PHP-FPM hinter mod_proxy_fcgi) kommt der Header sonst nicht in
+# $_SERVER['HTTP_AUTHORIZATION'] an.
+RewriteCond %{HTTP:Authorization} ^(.*)
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]
+
+# Existierende Dateien/Verzeichnisse (z.B. /static/style.css) direkt ausliefern
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Alles andere an den Front-Controller
+RewriteRule ^ index.php [QSA,L]

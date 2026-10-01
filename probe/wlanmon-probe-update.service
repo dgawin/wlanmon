@@ -1,0 +1,16 @@
+[Unit]
+Description=WLANMON Probe - automatisches Update aus dem Git-Repo (siehe update_probe.py)
+# Bewusst KEIN "After=wlanmon-probe.service"/"BindsTo" - das Update muss
+# unabhaengig vom Hauptdienst laufen koennen (auch wenn der haengt).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# repo_dir liegt ueblicherweise im Home-Verzeichnis des Benutzers, der den
+# Checkout angelegt hat (siehe auto_update.repo_dir in config.yaml) -
+# ProtectHome bleibt deshalb aus, sonst sieht der Dienst /home gar nicht.
+ExecStart=/opt/wlanmon-probe/venv/bin/python3 /opt/wlanmon-probe/update_probe.py
+StandardOutput=journal
+StandardError=journal

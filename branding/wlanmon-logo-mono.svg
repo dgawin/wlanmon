@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1004 240" width="1004" height="240">
+  <title>wlanmon</title>
+  <!-- Bildzeichen -->
+  <g transform="scale(0.46875)">
+    <rect width="512" height="512" rx="112" fill="#000000"/>
+    <g transform="translate(0 -44)"><g fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M206.5 310.5 A70 70 0 0 1 305.5 310.5"/>
+      <path d="M160.5 264.5 A135 135 0 0 1 351.5 264.5"/>
+      <path d="M114.6 218.6 A200 200 0 0 1 397.4 218.6"/>
+      <path d="M88 404 H186 L218 446 L256 362 L294 446 L326 404 H424"/>
+    </g>
+    <circle cx="256" cy="362" r="26" fill="#000000" stroke="#ffffff" stroke-width="10"/></g>
+  </g>
+  <!-- Wortzeichen: eigene Monoline-Buchstaben, x-Höhe 100..200, Oberlänge ab 40 -->
+  <g transform="translate(292 24) scale(0.8)" fill="none" stroke-width="24" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="#000000">
+      <path d="M0 100 L22 200 L45 122 L68 200 L90 100"/>
+      <path d="M126 40 V200"/>
+      <circle cx="212" cy="150" r="50"/>
+      <path d="M262 100 V200"/>
+      <path d="M298 200 V100 M298 150 A50 50 0 0 1 398 150 V200"/>
+    </g>
+    <g stroke="#000000">
+      <path d="M434 200 V100 M434 140 A40 40 0 0 1 514 140 V200 M514 140 A40 40 0 0 1 594 140 V200"/>
+      <circle cx="680" cy="150" r="50"/>
+      <path d="M766 200 V100 M766 150 A50 50 0 0 1 866 150 V200"/>
+    </g>
+  </g>
+</svg>

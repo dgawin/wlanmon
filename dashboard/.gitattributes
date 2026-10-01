@@ -1,0 +1,6 @@
+# Shell-Skripte und Docker-Dateien laufen im Linux-Container: immer LF,
+# auch bei einem Checkout unter Windows (core.autocrlf=true), sonst
+# scheitert z.B. "#!/bin/sh\r" beim Containerstart.
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker/* text eol=lf

@@ -1,0 +1,9 @@
+PyYAML>=6.0
+requests>=2.31
+
+# Für das optionale OLED-Display (display.enabled: true in config.yaml).
+# Ohne Display einfach ignorieren/nicht installieren - main.py läuft auch
+# ohne diese Pakete, DisplayLoop loggt dann nur eine Warnung und bleibt
+# inaktiv.
+luma.oled>=3.13
+luma.core>=2.4

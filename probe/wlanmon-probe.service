@@ -1,0 +1,27 @@
+[Unit]
+Description=WLANMON Probe - WLAN Scan & Connection Test Client
+After=network.target
+
+[Service]
+Type=simple
+# Root wird benötigt für iw / wpa_supplicant / dhclient auf dem Interface
+User=root
+WorkingDirectory=/opt/wlanmon-probe
+# venv statt System-Python, siehe setup_wlanmon_probe.sh (PEP 668 /
+# "externally-managed-environment" auf modernen Debian/Ubuntu-Images)
+ExecStart=/opt/wlanmon-probe/venv/bin/python3 /opt/wlanmon-probe/main.py --config /etc/wlanmon-probe/config.yaml
+# "always" statt "on-failure": der ConfigWatcher beendet den Prozess
+# bewusst sauber (exit code 75), wenn eine neue Remote-Config erkannt
+# wurde, damit sie beim Neustart vollständig neu geladen wird.
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Grundlegendes Hardening; iw/wpa_supplicant brauchen Netzwerk-Caps,
+# daher kein ProtectKernelModules/NoNewPrivileges hier.
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

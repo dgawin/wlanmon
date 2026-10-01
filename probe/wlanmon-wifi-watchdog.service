@@ -1,0 +1,10 @@
+[Unit]
+Description=WLANMON WLAN-Watchdog (rebootet bei dauerhaft fehlendem WLAN-Interface)
+# Bewusst KEIN "After=wlanmon-probe.service"/"BindsTo" - der Watchdog
+# muss unabhängig vom eigentlichen Probe-Service funktionieren, auch
+# wenn dieser hängt oder abgestürzt ist.
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wlanmon-probe/wlan_watchdog.sh

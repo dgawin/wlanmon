@@ -1,0 +1,99 @@
+name: CI
+
+# Syntax-Checks fuer beide Teile des Repos (dashboard/: PHP, probe/: Python
+# und Shell). Bewusst nur Syntax/Compile-Checks - Details in den Kommentaren
+# der Jobs.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  dashboard:
+    defaults:
+      run:
+        working-directory: dashboard
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # README ("Voraussetzungen"): "PHP >= 7.4 (getestet mit 8.3)" - beide
+        # Enden der unterstuetzten Spanne pruefen, nicht nur die eigene
+        # Testversion. php -l allein prueft nur Syntax, nicht ob eine
+        # verwendete Funktion in der jeweiligen Version ueberhaupt existiert
+        # (z.B. str_starts_with(), PHP 8.0+) - dafuer zusaetzlich unten ein
+        # kurzer Funktions-Verfuegbarkeits-Check.
+        php-version: ["7.4", "8.3"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+
+      - name: PHP-Syntax pruefen (php -l)
+        run: |
+          set -e
+          find . -name "*.php" -not -path "./.git/*" -print0 \
+            | xargs -0 -n1 php -l
+          echo "Alle .php-Dateien kompilieren fehlerfrei."
+
+      - name: Shell-Skript pruefen (bash -n)
+        run: bash -n update_dashboard.sh
+
+      # "php -l" prueft nur Syntax, nicht ob eine aufgerufene Funktion in der
+      # jeweiligen Version ueberhaupt existiert - ein Aufruf einer
+      # unbekannten Funktion ist syntaktisch gueltiges PHP und faellt dort
+      # nie auf (das ist uns auf dem Produktivserver mit einer neueren
+      # String-Funktion passiert, der dort verwendete "php" in PATH ist
+      # aelter als 8.0). Grep-basiert statt eines echten Compat-Checkers
+      # (PHPCompatibility bräuchte Composer, das Projekt hat bewusst keinen
+      # vendor-Ordner) - deckt die ueblichen Verdaechtigen ab, ist aber kein
+      # vollstaendiger Ersatz fuer einen echten Test auf PHP 7.4.
+      - name: "Keine PHP-8.0+-only-Funktionen (README: PHP >= 7.4)"
+        run: |
+          set -e
+          hits=$(grep -rnE '\b(str_starts_with|str_ends_with|str_contains)\s*\(' \
+            --include='*.php' . || true)
+          if [ -n "$hits" ]; then
+            echo "FEHLER: PHP-8.0+-only-Funktion(en) gefunden (Projekt zielt auf PHP >= 7.4):"
+            echo "$hits"
+            exit 1
+          fi
+          echo "Keine bekannten PHP-8.0+-only-Funktionen gefunden."
+
+      - name: config.php darf nie im Repo liegen (echte Secrets)
+        run: |
+          if [ -f config.php ]; then
+            echo "FEHLER: config.php mit echten Zugangsdaten liegt im Repo!"
+            exit 1
+          fi
+          echo "config.php nicht im Repo - ok."
+
+  probe:
+    defaults:
+      run:
+        working-directory: probe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Python-Syntax pruefen (py_compile)
+        run: |
+          set -e
+          find . -name "*.py" -not -path "./.git/*" -print0 \
+            | xargs -0 -n1 python -m py_compile
+          echo "Alle .py-Dateien kompilieren fehlerfrei."
+
+      - name: Shell-Skripte pruefen (bash -n)
+        run: |
+          set -e
+          for f in $(find . -name "*.sh" -not -path "./.git/*"); do
+            echo "== $f =="
+            bash -n "$f"
+          done
+          echo "Alle .sh-Dateien syntaktisch ok."

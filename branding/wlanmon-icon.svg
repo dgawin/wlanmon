@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>wlanmon</title>
+  <rect width="512" height="512" rx="112" fill="#2563eb"/>
+  <g transform="translate(0 -44)"><g fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M206.5 310.5 A70 70 0 0 1 305.5 310.5"/>
+    <path d="M160.5 264.5 A135 135 0 0 1 351.5 264.5"/>
+    <path d="M114.6 218.6 A200 200 0 0 1 397.4 218.6"/>
+    <path d="M88 404 H186 L218 446 L256 362 L294 446 L326 404 H424"/>
+  </g>
+  <circle cx="256" cy="362" r="26" fill="#4ade80" stroke="#ffffff" stroke-width="10"/></g>
+</svg>

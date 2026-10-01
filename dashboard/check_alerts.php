@@ -1,0 +1,199 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+/**
+ * Periodische Alert-Auswertung (siehe README, Abschnitt "Alerting").
+ * Prueft je Geraet, das einer Site zugeordnet ist und fuer dessen Site
+ * Alerting aktiviert ist (siehe /sites/<id>/alerting):
+ *   - "offline": laenger als offline_after_minutes nicht gemeldet
+ *     (bzw. noch nie gemeldet, dann gegen created_at statt last_seen_at).
+ *   - "ssid_failing:<SSID>": die letzten consecutive_test_failures
+ *     Connection-Tests dieser SSID waren allesamt nicht verbunden.
+ * Bei einer NEUEN Stoerung wird sofort benachrichtigt (sofern gerade im
+ * erlaubten Zeitfenster der Site); bleibt sie bestehen, erst wieder nach
+ * repeat_after_minutes (kein Spam bei jedem Cron-Tick); klaert sie sich,
+ * gibt es eine Entwarnung. Zustand liegt in der Tabelle "alerts" (siehe
+ * schema.sql) und wird UNABHAENGIG vom Zeitfenster immer aktuell
+ * gehalten - nur der tatsaechliche Versand wird ausserhalb des Fensters
+ * unterdrueckt (siehe alert_handle_condition() in src/Alerting.php).
+ * Geraete ohne Site-Zuordnung werden uebersprungen - Alerting ist ein
+ * reines Site-Feature.
+ */
+
+// Gedacht fuer einen periodischen Cronjob (z.B. alle 5 Minuten), Beispiel-
+// Cron-Zeile (bewusst als "//"-Kommentar, nicht im Docblock oben - ein
+// "*/" mitten im Text wuerde dort das Kommentarende vortaeuschen und die
+// Datei mit einem Parse-Fehler kaputt machen):
+//   */5 * * * * php /pfad/zu/check_alerts.php >> /var/log/wlanmon-alerts.log 2>&1
+//
+// Manueller Test der Zustellung (E-Mail/Telegram) fuer eine bestimmte
+// Site, unabhaengig von deren "enabled"-Schalter und Zeitfenster, ohne
+// die Alert-Tabelle anzufassen:
+//   php check_alerts.php --test <site-name>
+
+require_once __DIR__ . '/src/db.php';
+require_once __DIR__ . '/src/Response.php';
+require_once __DIR__ . '/src/Device.php';
+require_once __DIR__ . '/src/Measurement.php';
+require_once __DIR__ . '/src/Alerting.php';
+require_once __DIR__ . '/src/Site.php';
+require_once __DIR__ . '/src/I18n.php';
+
+function log_line(string $msg): void
+{
+    fwrite(STDERR, '[' . date('Y-m-d H:i:s') . "] $msg\n");
+}
+
+$testIndex = array_search('--test', $argv, true);
+if ($testIndex !== false) {
+    $siteName = $argv[$testIndex + 1] ?? null;
+    if ($siteName === null) {
+        log_line('Aufruf: php check_alerts.php --test <site-name>');
+        exit(1);
+    }
+    $site = site_find_by_name($siteName);
+    if ($site === null) {
+        log_line("Site '$siteName' nicht gefunden (siehe /sites).");
+        exit(1);
+    }
+    $siteAlerting = site_alerting_get((int) $site['id']) ?? [];
+    log_line("Sende Test-Alarm fuer Site '$siteName' (E-Mail/Telegram, je nach *_enabled unter /sites/{$site['id']}/alerting)...");
+    // Texte in der Alert-Sprache des Standorts (siehe /sites/<id>/alerting).
+    with_lang($siteAlerting['language'] ?? null, function () use ($siteAlerting, $siteName): void {
+        dispatch_alert(
+            site_alerting_channels($siteAlerting),
+            __('WLANMON: Test-Alarm (%s)', $siteName),
+            __('Dies ist ein Testalarm von „php check_alerts.php --test“, um die Zustellung zu prüfen. Keine echte Störung.')
+        );
+    });
+    log_line('Fertig - bei Fehlern steht die Ursache im PHP-Error-Log (error_log).');
+    exit(0);
+}
+
+/** Ruft alert_handle_condition() auf und loggt, was passiert ist. */
+function handle_condition(
+    string $deviceId,
+    string $rule,
+    bool $active,
+    string $subject,
+    string $message,
+    int $repeatAfterSeconds,
+    array $siteChannels,
+    bool $notifyAllowed
+): void {
+    $outcome = alert_handle_condition($deviceId, $rule, $active, $subject, $message, $repeatAfterSeconds, $siteChannels, $notifyAllowed);
+    if ($outcome !== 'unveraendert') {
+        log_line(strtoupper($outcome) . ": $deviceId / $rule" . ($notifyAllowed ? '' : ' (Zeitfenster zu, nur Zustand aktualisiert)'));
+    }
+}
+
+// Site-Alerting-Configs nicht pro Geraet einzeln nachladen, sondern einmal
+// pro tatsaechlich vorkommender Site cachen (mehrere Geraete teilen sich
+// oft dieselbe Site).
+$siteAlertingCache = [];
+
+foreach (device_list() as $device) {
+    $deviceId = (string) $device['id'];
+    $siteId = isset($device['site_id']) ? (int) $device['site_id'] : null;
+    if ($siteId === null) {
+        continue;
+    }
+    if (!array_key_exists($siteId, $siteAlertingCache)) {
+        $siteAlertingCache[$siteId] = site_alerting_get($siteId);
+    }
+    $siteAlerting = $siteAlertingCache[$siteId];
+    if ($siteAlerting === null || empty($siteAlerting['enabled'])) {
+        continue;
+    }
+    $site = $device['site_name'] ?? '–';
+    // Alle Texte dieses Geräts (Meldung, Erinnerung, Entwarnung, Fehler)
+    // in der Alert-Sprache seines Standorts.
+    current_lang_override(isset(WLANMON_LANGS[$siteAlerting['language'] ?? '']) ? $siteAlerting['language'] : 'de');
+    $siteChannels = site_alerting_channels($siteAlerting);
+    $notifyAllowed = alerting_schedule_allows_now($siteAlerting);
+
+    $offlineAfterSeconds = max(60, (int) $siteAlerting['offline_after_minutes'] * 60);
+    $consecutiveFailures = max(2, (int) $siteAlerting['consecutive_test_failures']);
+    $repeatAfterSeconds = max(300, (int) $siteAlerting['repeat_after_minutes'] * 60);
+
+    // --- Regel "offline" ---
+    $referenceTime = $device['last_seen_at'] ?? $device['created_at'];
+    $secondsSince = null;
+    if (!empty($referenceTime)) {
+        $ref = new DateTime((string) $referenceTime, new DateTimeZone('UTC'));
+        $secondsSince = (new DateTime('now', new DateTimeZone('UTC')))->getTimestamp() - $ref->getTimestamp();
+    }
+    $isOffline = $secondsSince === null || $secondsSince > $offlineAfterSeconds;
+    $minutesSince = $secondsSince !== null ? (int) round($secondsSince / 60) : null;
+
+    handle_condition(
+        $deviceId,
+        'offline',
+        $isOffline,
+        __('WLANMON: %s offline', $deviceId),
+        $minutesSince !== null
+            ? __('Gerät %s (Standort: %s) hat sich seit %d Minuten nicht mehr gemeldet.', $deviceId, $site, $minutesSince)
+            : __('Gerät %s (Standort: %s) hat sich seit der Anlage des Geräts nicht mehr gemeldet.', $deviceId, $site),
+        $repeatAfterSeconds,
+        $siteChannels,
+        $notifyAllowed
+    );
+
+    // Waehrend ein Geraet offline ist, sind SSID-Aussagen nur veraltete
+    // Messwerte - keine zusaetzlichen (unter Umstaenden irrefuehrenden)
+    // SSID-Alarme daraus ableiten.
+    if ($isOffline) {
+        continue;
+    }
+
+    // --- Regel "ssid_failing:<SSID>" ---
+    // Die letzten $consecutiveFailures Connection-Tests je SSID sammeln.
+    // Lookback grosszuegig (300), damit bei mehreren Ziel-SSIDs pro Geraet
+    // genug Historie je SSID zusammenkommt.
+    $bySsid = [];
+    foreach (measurement_list($deviceId, 'connection_test', 300) as $t) {
+        $data = json_decode((string) $t['data'], true) ?: [];
+        $ssid = $data['ssid'] ?? null;
+        if ($ssid === null) {
+            continue;
+        }
+        $bySsid[$ssid] ??= [];
+        if (count($bySsid[$ssid]) < $consecutiveFailures) {
+            $bySsid[$ssid][] = !empty($data['connected']);
+        }
+    }
+
+    foreach ($bySsid as $ssid => $results) {
+        // $results[0] ist der NEUESTE Test (measurement_list liefert DESC),
+        // $results[1.. ] jeweils aeltere. Zwei eindeutige Faelle:
+        //   - der neueste Test war erfolgreich -> definitiv erholt, sofort
+        //     entwarnen (nicht erst nach $consecutiveFailures Erfolgen).
+        //   - die letzten $consecutiveFailures Tests (ab dem neuesten)
+        //     waren ALLE Fehlschlaege -> definitiv gestoert.
+        // Dazwischen (neuester Test fehlgeschlagen, aber weniger als
+        // $consecutiveFailures Fehlschlaege in Folge seit einem aelteren
+        // Erfolg im Lookback-Fenster) bewusst NICHT anfassen: ohne diese
+        // Unterscheidung wuerde ein laengst vergangener Erfolg im Fenster
+        // eine ganz frische, noch andauernde Stoerung faelschlich als
+        // "behoben" melden, obwohl der neueste Test gerade fehlgeschlagen
+        // ist (in der Praxis beobachtet).
+        $newestOk = $results[0] ?? null;
+        $allFailing = count($results) >= $consecutiveFailures && !in_array(true, $results, true);
+        if ($newestOk !== true && !$allFailing) {
+            continue;
+        }
+        handle_condition(
+            $deviceId,
+            'ssid_failing:' . $ssid,
+            $allFailing,
+            __('WLANMON: %s – SSID „%s“ fällt aus', $deviceId, (string) $ssid),
+            __('Gerät %s (Standort: %s): SSID „%s“ ist bei den letzten %d Connection-Tests in Folge fehlgeschlagen.', $deviceId, $site, (string) $ssid, $consecutiveFailures),
+            $repeatAfterSeconds,
+            $siteChannels,
+            $notifyAllowed
+        );
+    }
+}
+
+log_line('Durchlauf abgeschlossen.');

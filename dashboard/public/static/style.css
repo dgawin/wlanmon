@@ -1,0 +1,1002 @@
+/* Design-Sprache angelehnt an das AppStack-Admin-Template (siehe /template
+   im Projekt-Root): weiche Karten mit dezentem Schatten, große Radien,
+   Nunito-Schrift, Font-Awesome-Icons. Bewusst kein Bootstrap/JS-Framework
+   uebernommen - bleibt ein einzelnes, handgepflegtes Stylesheet ohne
+   Build-Schritt, passend zum Rest des Projekts. */
+
+:root {
+    color-scheme: light dark;
+    --bg: #f5f8fb;
+    --card-bg: #ffffff;
+    --card-shadow: 0 1px 2px rgba(30, 41, 59, 0.04), 0 8px 24px rgba(30, 41, 59, 0.06);
+    --border: #e3e8ef;
+    --fg: #3f4a5a;
+    --heading: #1f2733;
+    --muted: #737d8c;
+    --accent: #2563eb;
+    --accent-fg: #ffffff;
+    --ok: #16a34a;
+    --fail: #dc2626;
+    --warn: #d97706;
+    --radius: 12px;
+    --radius-sm: 8px;
+    /* Spektrumansicht (static/spectrum.js): Ziel-SSIDs 1-3, übrige Netze.
+       Validiert (dataviz-Palette, all-pairs, CVD ΔE >= 9,2) gegen --card-bg
+       hell/dunkel; das Aqua liegt hell unter 3:1 - deshalb direkt beschriftet. */
+    --spec-1: #2a78d6;
+    --spec-2: #eb6834;
+    --spec-3: #1baf7a;
+    /* Slots 4-8 nur für Linien (Verlauf, adjacent-validiert) - nicht für
+       überlappende Flächen wie das Spektrum, dort bleibt es bei 1-3. */
+    --spec-4: #eda100;
+    --spec-5: #e87ba4;
+    --spec-6: #008300;
+    --spec-7: #4a3aa7;
+    --spec-8: #e34948;
+    --spec-other: #898781;
+}
+
+/* Dunkle Werte zweimal: einmal fuer "Auto" (folgt dem Betriebssystem,
+   solange kein Hell erzwungen ist), einmal fuer explizit "Dunkel" per
+   Umschalter in der Kopfzeile (data-theme auf <html>, siehe static/theme.js). */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --bg: #12161f;
+        --card-bg: #1b212d;
+        --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+        --border: #2c3341;
+        --fg: #c7cfda;
+        --heading: #f2f5f9;
+        --muted: #8b96a6;
+        --accent: #3b82f6;
+        --ok: #4ade80;
+        --fail: #f87171;
+        --warn: #fbbf24;
+        --spec-1: #3987e5;
+        --spec-2: #d95926;
+        --spec-3: #199e70;
+        --spec-4: #c98500;
+        --spec-5: #d55181;
+        --spec-6: #008300;
+        --spec-7: #9085e9;
+        --spec-8: #e66767;
+    }
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #12161f;
+    --card-bg: #1b212d;
+    --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --border: #2c3341;
+    --fg: #c7cfda;
+    --heading: #f2f5f9;
+    --muted: #8b96a6;
+    --accent: #3b82f6;
+    --ok: #4ade80;
+    --fail: #f87171;
+    --warn: #fbbf24;
+    --spec-1: #3987e5;
+    --spec-2: #d95926;
+    --spec-3: #199e70;
+    --spec-4: #c98500;
+    --spec-5: #d55181;
+    --spec-6: #008300;
+    --spec-7: #9085e9;
+    --spec-8: #e66767;
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+
+* { box-sizing: border-box; }
+
+body {
+    font-family: "Nunito", -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    line-height: 1.55;
+    background: var(--bg);
+    color: var(--fg);
+}
+
+header {
+    display: flex;
+    align-items: center;
+    padding: 0.9rem 1.5rem;
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 800;
+    font-size: 1.15rem;
+    letter-spacing: -0.01em;
+    text-decoration: none;
+    color: var(--heading);
+}
+
+.brand i { color: var(--accent); font-size: 1.1em; }
+
+/* Logo in der Kopfzeile (_nav.php); Bildzeichen fest blau, Schriftzug folgt dem Design. */
+.brand-logo { display: block; height: 2rem; width: auto; }
+.brand-logo-wlan { stroke: var(--heading); }
+.brand-logo-mon { stroke: var(--accent); }
+
+.header-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.header-link:hover { color: var(--accent); }
+
+.nav-header { flex-wrap: wrap; gap: 0.8rem; }
+
+.main-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex: 1;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.main-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.9rem;
+    border-radius: var(--radius-sm);
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.main-nav a:hover { color: var(--heading); background: color-mix(in srgb, var(--muted) 10%, transparent); }
+.main-nav a.active { color: var(--accent-fg); background: var(--accent); }
+
+.nav-user {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.nav-user form { display: inline-flex; }
+
+/* Benutzermenü in der Kopfzeile (_nav.php): Hover, Klick und Tastatur. */
+.user-menu { position: relative; }
+.user-menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: 0.3rem 0.55rem;
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--fg);
+    cursor: pointer;
+}
+.user-menu-trigger:hover, .user-menu.open .user-menu-trigger { border-color: var(--border); background: color-mix(in srgb, var(--muted) 8%, transparent); }
+.user-menu-caret { font-size: 0.65rem; color: var(--muted); transition: transform 0.15s; }
+.user-menu:hover .user-menu-caret, .user-menu.open .user-menu-caret { transform: rotate(180deg); }
+.user-menu-list {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 20;
+    min-width: 220px;
+    padding: 0.35rem 0;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--card-shadow);
+}
+/* Unsichtbare Brücke über den 6px-Abstand, damit der Hover beim Wechsel
+   vom Namen ins Menü nicht abreißt. */
+.user-menu-list::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; height: 8px; }
+.user-menu:hover .user-menu-list,
+.user-menu:focus-within .user-menu-list,
+.user-menu.open .user-menu-list { display: block; }
+.user-menu-list form { display: block; margin: 0; }
+.user-menu-item,
+.user-menu-list form button.user-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    margin: 0;  /* überschreibt "form button { margin-top }" beim Abmelden */
+    padding: 0.5rem 0.9rem;
+    border: none;
+    border-radius: 0;
+    background: var(--card-bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    text-align: left;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: none;
+}
+.user-menu-item i { width: 1rem; text-align: center; color: var(--muted); }
+.user-menu-item.active { color: var(--accent); }
+
+/* Sprachumschalter "DE | EN" (Benutzermenü bzw. Kopfzeile ohne Anmeldung). */
+.user-menu-lang { cursor: default; }
+.user-menu-lang .lang-switch { margin-left: auto; }
+form.lang-switch { display: inline-flex; gap: 2px; margin: 0; }
+form.lang-switch button {
+    margin: 0;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 700;
+    box-shadow: none;
+    cursor: pointer;
+}
+form.lang-switch button:hover { color: var(--heading); border-color: var(--muted); }
+form.lang-switch button.active { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+.lang-switch-header { margin-right: 0.3rem; }
+.user-menu-sep { height: 1px; margin: 0.3rem 0; background: var(--border); }
+.user-menu-item:hover, .user-menu-item:focus-visible,
+.user-menu-list form button.user-menu-item:hover { background: color-mix(in srgb, var(--accent) 10%, var(--card-bg)); color: var(--heading); }
+.user-menu-item:hover i, .user-menu-item:focus-visible i { color: var(--accent); }
+
+.theme-toggle {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font: inherit;
+}
+
+main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 1.5rem;
+}
+
+.narrow-main {
+    max-width: 420px;
+}
+
+h1 {
+    margin-top: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+    color: var(--heading);
+}
+
+h2 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-top: 2rem;
+    color: var(--heading);
+}
+
+h3 { color: var(--heading); }
+
+a { color: var(--accent); }
+
+.back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--muted);
+}
+
+.back-link:hover { color: var(--accent); }
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+}
+
+th, td {
+    text-align: left;
+    padding: 0.55rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.92rem;
+}
+
+th {
+    font-weight: 700;
+    color: var(--muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+.muted { color: var(--muted); font-size: 0.85em; }
+.ok { color: var(--ok); font-weight: 600; }
+.fail { color: var(--fail); font-weight: 600; }
+.warn { color: var(--warn); font-weight: 600; }
+.empty { color: var(--muted); font-style: italic; }
+
+/* Kleine farbige Status-Pille (z.B. "Online", "Portal erkannt") -
+   Pendant zu den Badges im AppStack-Vorbild. */
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.pill-ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.pill-fail { background: color-mix(in srgb, var(--fail) 14%, transparent); color: var(--fail); }
+.pill-warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.pill-muted { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+
+details {
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.8rem;
+    margin-bottom: 0.5rem;
+}
+
+summary { cursor: pointer; font-weight: 600; }
+
+code {
+    background: color-mix(in srgb, var(--muted) 15%, transparent);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+}
+
+pre {
+    background: color-mix(in srgb, var(--muted) 12%, transparent);
+    padding: 0.8rem 1rem;
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+}
+
+.btn, form button, .btn-secondary, .btn-remove, .btn-small, .btn-danger {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-family: inherit;
+    text-decoration: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: filter 0.12s ease, transform 0.05s ease;
+}
+
+.btn:active, form button:active, .btn-secondary:active, .btn-remove:active,
+.btn-danger:active { transform: translateY(1px); }
+
+.btn:hover, form button:hover, .btn-danger:hover { filter: brightness(1.08); }
+.btn-secondary:hover, .btn-remove:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+.btn {
+    font-size: 0.85rem;
+    font-weight: 700;
+    background: var(--accent);
+    color: var(--accent-fg);
+    padding: 0.45rem 0.9rem;
+    vertical-align: middle;
+}
+
+.ssid-chart-block {
+    margin-bottom: 1.8rem;
+}
+
+.ssid-chart-block h3 {
+    margin-bottom: 0.4rem;
+}
+
+.chart-row {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.chart-col {
+    flex: 1 1 320px;
+    /* min() statt fester 280px: auf sehr schmalen Displays darf die Spalte
+       schmaler als 280px werden, statt die Seite seitlich zu sprengen. */
+    min-width: min(280px, 100%);
+}
+
+/* Volle Breite, z.B. Zeitdiagramm (Assoziation/802.1X/DHCP) in eigener Zeile */
+.chart-col-wide {
+    flex: 1 1 100%;
+}
+
+.chart-row + .chart-row {
+    margin-top: 1.2rem;
+}
+
+.chart-label {
+    margin: 0 0 0.2rem;
+}
+
+.scan-filters {
+    display: flex;
+    gap: 1.2rem;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    margin: 0.8rem 0 1rem;
+}
+
+.scan-filters label {
+    display: flex;
+    flex-direction: column;
+    font-size: 0.85rem;
+    font-weight: 600;
+    gap: 0.25rem;
+}
+
+.scan-filters input,
+.scan-filters select {
+    padding: 0.4rem 0.55rem;
+    background: var(--card-bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+}
+
+.scan-block {
+    margin-bottom: 0.5rem;
+}
+
+table.scan-table th[data-sort] {
+    cursor: pointer;
+    user-select: none;
+}
+
+table.scan-table th[data-sort]:hover {
+    text-decoration: underline;
+}
+
+table.scan-table th[data-sort][data-dir="asc"]::after {
+    content: " \25B2";
+}
+
+table.scan-table th[data-sort][data-dir="desc"]::after {
+    content: " \25BC";
+}
+
+/* Kanalbelegung unter der Netzliste: nur 5 schmale Spalten, daher nicht
+   ueber die volle Breite ziehen. */
+table.survey-table { width: auto; min-width: 50%; }
+
+/* Spektrumansicht im Scan-Tab (static/spectrum.js). */
+.spectrum-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.2rem 0.6rem;
+    margin: 1rem 0 1.5rem;
+}
+.spectrum-head { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+.spectrum-bands { margin-left: auto; display: inline-flex; gap: 0.4rem; }
+.spectrum-band.active { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+.spectrum-band:disabled { opacity: 0.4; cursor: default; }
+.spectrum-legend { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; margin: 0.6rem 0 0.2rem; font-size: 0.85rem; color: var(--fg); }
+.spec-legend-item { display: inline-flex; align-items: center; gap: 0.4rem; }
+.spec-key { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
+.spectrum-wrap { position: relative; }
+#spectrumSvg { display: block; width: 100%; height: 280px; }
+.spec-grid line { stroke: var(--border); stroke-width: 1; }
+.spec-grid line.spec-base { stroke: var(--muted); }
+.spec-axis { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.spec-mark { stroke-width: 2; fill-opacity: 0.12; stroke-linejoin: round; cursor: pointer; outline: none; }
+.spec-other { stroke: var(--spec-other); fill: var(--spec-other); stroke-width: 1.2; fill-opacity: 0.05; stroke-opacity: 0.7; }
+.spec-mark:hover, .spec-mark:focus { stroke-width: 3; fill-opacity: 0.3; stroke-opacity: 1; }
+.spec-label { fill: var(--heading); font-size: 11.5px; font-weight: 700; paint-order: stroke; stroke: var(--card-bg); stroke-width: 3px; pointer-events: none; }
+.spectrum-tip {
+    position: absolute;
+    z-index: 5;
+    pointer-events: none;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--card-shadow);
+    padding: 0.45rem 0.65rem;
+    font-size: 0.82rem;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+.spectrum-tip strong { font-size: 0.95rem; color: var(--heading); }
+
+/* Tab "Verlauf" (static/timeline.js). */
+.timeline-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.9rem 1.1rem 0.6rem;
+    margin: 0.8rem 0 1.2rem;
+}
+.timeline-title { font-weight: 700; color: var(--heading); margin-bottom: 0.4rem; }
+.timeline-canvas { position: relative; height: 280px; }
+.timeline-empty { margin: 0.5rem 0; }
+.timeline-range.active { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+/* Freier Zeitraum von/bis unter den Voreinstellungen. */
+.timeline-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.8rem; margin: 0.2rem 0 0.6rem; }
+.timeline-custom label { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0; font-weight: 600; }
+.timeline-custom input[type="datetime-local"] { width: auto; margin: 0; }
+.timeline-custom button { margin: 0; }
+.timeline-custom.active input { border-color: var(--accent); }
+
+/* Roaming-Fähigkeiten in der Scan-Tabelle (11k/NR/11v/11r). */
+.cap-tag {
+    display: inline-block;
+    padding: 0 0.35rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    white-space: nowrap;
+}
+
+form label {
+    display: block;
+    font-weight: 700;
+    font-size: 0.9rem;
+    color: var(--heading);
+    margin: 1rem 0 0.35rem;
+}
+
+form input[type="text"],
+form input[type="number"],
+form input[type="password"],
+form select {
+    width: 100%;
+    max-width: 360px;
+    padding: 0.5rem 0.65rem;
+    background: var(--card-bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.95rem;
+    font-family: inherit;
+}
+
+form input:focus, form select:focus, form textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+form button {
+    margin-top: 1.2rem;
+    background: var(--accent);
+    color: var(--accent-fg);
+    border: none;
+    padding: 0.55rem 1.3rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+}
+
+.config-form fieldset {
+    background: var(--card-bg);
+    box-shadow: var(--card-shadow);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin: 1.2rem 0;
+    padding: 0.4rem 1.2rem 1.2rem;
+}
+
+.config-form legend {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 800;
+    color: var(--heading);
+    padding: 0 0.4rem;
+}
+
+.config-form legend i { color: var(--accent); }
+
+/* Ziel-SSID-Karten auf der Konfigurationsseite (inkl. 802.1X-Felder) */
+.target-card {
+    border: 1px solid var(--border);
+    box-shadow: var(--card-shadow);
+    border-radius: var(--radius);
+    padding: 0.9rem 1.2rem 1.2rem;
+    margin-bottom: 1rem;
+    background: var(--card-bg);
+}
+
+.target-head {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.target-head input[type="text"] {
+    flex: 1 1 200px;
+}
+
+.target-head select {
+    width: auto;
+}
+
+.target-head .btn-remove {
+    margin-top: 0;
+}
+
+.eap-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 0 1.2rem;
+}
+
+/* Gruppen innerhalb einer Ziel-SSID-Karte (Captive Portal, iperf3, ...) -
+   eine leichte Trennlinie + kleiner Titel statt eines eigenen fieldset,
+   damit klar ist: das gilt alles nur fuer diese eine SSID. */
+.target-section {
+    border-top: 1px solid var(--border);
+    margin-top: 0.7rem;
+    padding-top: 0.6rem;
+}
+
+.target-section-title {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.4rem;
+}
+
+.target-section-title i { color: var(--accent); }
+
+.eap-grid input[type="text"],
+.eap-grid input[type="password"],
+.eap-grid select {
+    max-width: none;
+}
+
+.target-card textarea {
+    display: block;
+    width: 100%;
+    max-width: 640px;
+    box-sizing: border-box;
+    background: var(--card-bg);
+    color: var(--fg);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.78rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+/* "Gespeicherten Wert entfernen" neben Passwortfeldern (nur schreiben, siehe device_config.php). */
+.secret-clear { display: inline-flex; align-items: center; gap: 0.35rem; margin: 0.3rem 0 0; font-size: 0.85rem; font-weight: 400; }
+.secret-clear input { width: auto; margin: 0; }
+/* Änderungsprotokoll (_audit_list.php). */
+.audit-table td { vertical-align: top; }
+.audit-table td.nowrap { white-space: nowrap; }
+.audit-change { margin: 0.1rem 0; overflow-wrap: anywhere; }
+
+/* Passwortfeld mit Anzeigen/Verbergen-Schalter */
+.pw-field {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    max-width: 360px;
+}
+
+.pw-field input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.pw-field .pw-toggle {
+    margin-top: 0;
+    white-space: nowrap;
+}
+
+label.check-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 400;
+    color: var(--fg);
+    align-self: end;
+}
+
+.btn-secondary {
+    margin-top: 0.6rem;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 0.45rem 1rem;
+    font-size: 0.88rem;
+    font-weight: 700;
+}
+
+.btn-remove {
+    background: transparent;
+    color: var(--fail);
+    border: 1px solid color-mix(in srgb, var(--fail) 50%, transparent);
+    padding: 0.35rem 0.75rem;
+    font-size: 0.82rem;
+    margin-top: 0;
+}
+
+.btn-small {
+    padding: 0.3rem 0.65rem;
+    font-size: 0.78rem;
+}
+
+/* Rohdaten-Link neben "Löschen" in Tabellenzeilen - dort ohne den
+   sonstigen .btn-secondary-Standardabstand nach oben, sonst wirkt er
+   gegenüber dem danebenstehenden .btn-remove verrutscht. */
+.raw-link {
+    margin-top: 0;
+}
+
+.btn-danger {
+    background: var(--fail);
+    color: #fff;
+    border: none;
+    padding: 0.55rem 1.1rem;
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.inline-form {
+    display: inline-block;
+}
+
+.form-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    margin-top: 1.2rem;
+}
+
+.form-actions button {
+    margin-top: 0;
+}
+
+.h2-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+}
+
+.test-bulk-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+    margin: 0.6rem 0;
+}
+
+.test-filter-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+}
+
+.test-bulk-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.test-bulk-count {
+    font-size: 0.82rem;
+}
+
+.test-bulk-delete-form {
+    display: none;
+}
+
+.inline-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--muted);
+}
+
+.inline-label select {
+    padding: 0.3rem 0.45rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+    font-weight: 400;
+    color: var(--fg);
+}
+
+/* Status-Punkt (online/offline) auf Übersichts- und Detailseite */
+.status-dot {
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    margin-right: 0.35rem;
+    vertical-align: middle;
+}
+
+.status-online { background: var(--ok); }
+.status-offline { background: var(--fail); }
+
+/* Kennzahlen-Kacheln oben auf der Geräte-Detailseite */
+.kpi-row {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin: 1rem 0 1.8rem;
+}
+
+.kpi-tile {
+    flex: 1 1 180px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    box-shadow: var(--card-shadow);
+    border-radius: var(--radius);
+    padding: 1rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.kpi-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.76rem;
+    color: var(--muted);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.kpi-label i {
+    color: var(--accent);
+    font-size: 0.95em;
+}
+
+.kpi-value {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: var(--heading);
+}
+
+.kpi-value.fail { color: var(--fail); }
+
+/* Mehrzeiliger Wert (z.B. mehrere IPs) etwas kleiner als eine Zahl */
+.kpi-value-small { font-size: 1rem; line-height: 1.4; }
+
+.link-cell { font-size: 0.85rem; }
+
+/* Tabs auf der Geräte-Detailseite */
+.tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--border);
+    margin: 1.5rem 0 1rem;
+}
+
+.tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -1px;
+    padding: 0.6rem 0.9rem;
+    font: inherit;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.tab-btn i { font-size: 0.9em; }
+
+.tab-btn:hover { color: var(--fg); }
+
+.tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+.tab-btn .status-dot { margin-right: 0; }
+
+.tab-panel[hidden] { display: none; }
+
+/* Breite Tabellen scrollen im Container statt die Seite zu sprengen */
+.table-scroll { overflow-x: auto; }
+
+/* Kleine Displays (Handy): engere Abstände, kleinere Überschriften,
+   Tabs zum seitlichen Wischen statt umbrechen */
+@media (max-width: 640px) {
+    header { padding: 0.8rem 1rem; }
+    main { padding: 1rem; }
+    h1 { font-size: 1.4rem; }
+    h2 { margin-top: 1.4rem; font-size: 1.15rem; }
+    th, td { padding: 0.4rem 0.45rem; font-size: 0.85rem; }
+    .kpi-row { gap: 0.6rem; }
+    .kpi-tile { flex: 1 1 140px; padding: 0.75rem 0.9rem; }
+    .kpi-value { font-size: 1.2rem; }
+    .tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .tab-btn { white-space: nowrap; padding: 0.5rem 0.7rem; }
+    .scan-filters { gap: 0.7rem; }
+    form input[type="text"],
+    form input[type="number"],
+    form input[type="password"],
+    form select { max-width: none; }
+    .pw-field { max-width: none; }
+}
+
+/* Gefahrenzone auf der Konfigurationsseite */
+.danger-zone {
+    margin-top: 2.5rem;
+    padding: 1.1rem 1.3rem;
+    background: color-mix(in srgb, var(--fail) 5%, var(--card-bg));
+    border: 1px solid color-mix(in srgb, var(--fail) 35%, transparent);
+    border-radius: var(--radius);
+}
+
+.danger-zone h2 {
+    margin-top: 0;
+    color: var(--fail);
+    justify-content: flex-start;
+    gap: 0.5rem;
+}
+
+.danger-zone .inline-form {
+    margin-right: 0.6rem;
+}
+
+.scan-delete-form {
+    margin: 0.5rem 0;
+}

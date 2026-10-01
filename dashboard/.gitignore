@@ -1,0 +1,8 @@
+# Echte Konfiguration mit Secrets (DB-Passwort, Admin-Login, Zabbix-Token) -
+# nur config.example.php gehört ins Repo. Nur im Hauptverzeichnis -
+# docker/config.php (liest Umgebungsvariablen, keine Secrets) gehört dazu.
+/config.php
+
+# Lokale Editor-/OS-Artefakte
+.DS_Store
+Thumbs.db

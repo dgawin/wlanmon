@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodische Update-Pruefung fuer wlanmon-probe (Git)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+# Verteilt den Zeitpunkt zufaellig innerhalb der ersten 2 Minuten des
+# Fensters - falls mehrere Geraete gleichzeitig booten/pollen, hauen sie
+# nicht alle exakt zur selben Sekunde auf GitHub.
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

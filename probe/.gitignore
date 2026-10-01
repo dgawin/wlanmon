@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Echte Konfiguration mit Secrets (API-Key) - nur config.example.yaml gehört ins Repo
+config.yaml
+
+# Lokale Laufzeitdaten, falls versehentlich im Projektordner erzeugt
+*.db
+*.log
