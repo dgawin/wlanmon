@@ -159,8 +159,39 @@ PYEOF
     IFNAMES_JUST_SET=1
 }
 
-log "=== Schritt 1.5: klassische Interface-Namen erzwingen ==="
+# I2C-Bus 0 fuer das NanoHat-OLED (display.py, /dev/i2c-0): auf einem frischen
+# Armbian ist das Overlay aus, das Display bleibt dann dunkel. Hier statt im
+# Assistenten, weil es denselben Reboot wie net.ifnames=0 nutzt (der Assistent
+# laeuft erst danach). Nur wenn das Board ein passendes Overlay mitbringt
+# (<overlay_prefix>-i2c0.dtbo, z.B. sun50i-h5 beim NanoPi NEO2) - ohne Display
+# schadet der aktive Bus nicht.
+I2C_JUST_SET=0
+
+ensure_i2c0_overlay() {
+    [ -f "$ARMBIAN_ENV" ] || return
+    local prefix
+    prefix=$(sed -n 's/^overlay_prefix=//p' "$ARMBIAN_ENV" | head -n1)
+    if [ -z "$prefix" ] || ! ls /boot/dtb/*/overlay/"$prefix"-i2c0.dtbo /boot/dtb/overlay/"$prefix"-i2c0.dtbo >/dev/null 2>&1; then
+        log "Kein I2C0-Overlay fuer dieses Board gefunden - ueberspringe (nur fuer das NanoHat-OLED noetig)."
+        return
+    fi
+    if grep -Eq '^overlays=(.*[[:space:]])?i2c0([[:space:]]|$)' "$ARMBIAN_ENV"; then
+        log "I2C0-Overlay ist bereits aktiv."
+        return
+    fi
+    cp "$ARMBIAN_ENV" "$ARMBIAN_ENV.bak.$(date +%Y%m%d%H%M%S)"
+    if grep -q '^overlays=' "$ARMBIAN_ENV"; then
+        sed -i '/^overlays=/ s/[[:space:]]*$/ i2c0/; s/^overlays= /overlays=/' "$ARMBIAN_ENV"
+    else
+        echo "overlays=i2c0" >> "$ARMBIAN_ENV"
+    fi
+    log "I2C0-Overlay in $ARMBIAN_ENV aktiviert (NanoHat-OLED) - wirkt erst nach Reboot."
+    I2C_JUST_SET=1
+}
+
+log "=== Schritt 1.5: klassische Interface-Namen erzwingen, I2C fuer das OLED ==="
 ensure_net_ifnames_disabled
+ensure_i2c0_overlay
 
 # ---------------------------------------------------------------------
 # 2. wlanmon-probe installieren
@@ -297,6 +328,10 @@ fi
 
 log ""
 log "Installation abgeschlossen."
+if [ "$I2C_JUST_SET" -eq 1 ] && [ "$IFNAMES_JUST_SET" -eq 0 ]; then
+    # Beim Erstlauf deckt der Reboot-Hinweis unten das schon ab.
+    log "Hinweis: Das OLED-Display (I2C) laeuft erst nach einem Neustart (sudo reboot)."
+fi
 if [ "$IFNAMES_JUST_SET" -eq 1 ]; then
     log ""
     log "ACHTUNG: net.ifnames=0 wurde gerade gesetzt und wirkt erst nach einem"

@@ -103,8 +103,10 @@ time with `sudo wlanmon setup` – current values are offered as defaults.
 needed) the script starts the wizard right away.
 
 **OLED display (NanoHat OLED):** the I2C bus must be enabled, otherwise the
-display stays dark (the wizard warns if `/dev/i2c-0` is missing). On Armbian
-add the overlay `i2c0` and reboot:
+display stays dark. On Armbian the setup script enables the overlay `i2c0`
+itself if the board ships one (e.g. NanoPi NEO2) – it takes effect with the
+same reboot as `net.ifnames=0`. The wizard warns if `/dev/i2c-0` is still
+missing; to enable it by hand:
 
 ```bash
 grep -q '^overlays=' /boot/armbianEnv.txt && sudo sed -i '/^overlays=/{/i2c0/!s/$/ i2c0/}' /boot/armbianEnv.txt || echo 'overlays=i2c0' | sudo tee -a /boot/armbianEnv.txt
