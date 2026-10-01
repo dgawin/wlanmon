@@ -11,21 +11,31 @@
 #      konsistent wlan0/wlan1 statt der MAC-basierten Form (wlx<mac>)
 #      bekommen - wirkt erst nach einem Reboot.
 #   2. wlanmon-probe selbst installieren/aktualisieren (Dateien, Python-
-#      Abhaengigkeiten, systemd-Service). Am Ende wird das erkannte
-#      WLAN-Interface ausgegeben, das in config.yaml unter
-#      interface.name eingetragen werden muss.
+#      Abhaengigkeiten, systemd-Service).
+#   3. Einrichtungsassistent (config_wizard.py): fragt Geraete-ID, Dashboard-
+#      URL, API-Key, TLS, WLAN-Interface usw. ab, testet die Verbindung und
+#      schreibt config.yaml. Laeuft bei einer neuen Installation automatisch,
+#      sofern das Skript in einem Terminal laeuft; spaeter erneut mit
+#      "sudo wlanmon setup".
 #
 # Mehrfach ausfuehrbar; fehlt etwas (z.B. ifplugd), wird der jeweilige
 # Schritt uebersprungen.
 #
-# Aufruf: sudo ./setup_wlanmon_probe.sh [--skip-foundation-cleanup]
+# Aufruf: sudo ./setup_wlanmon_probe.sh [--skip-foundation-cleanup] [--wizard|--no-wizard]
+#   --wizard     Assistent auch bei vorhandener config.yaml ohne Rueckfrage starten
+#   --no-wizard  keinen Assistenten (z.B. fuer automatisierte Installationen)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 SKIP_FOUNDATION_CLEANUP=0
+WIZARD="auto"
 for arg in "$@"; do
-    [ "$arg" = "--skip-foundation-cleanup" ] && SKIP_FOUNDATION_CLEANUP=1
+    case "$arg" in
+        --skip-foundation-cleanup) SKIP_FOUNDATION_CLEANUP=1 ;;
+        --wizard) WIZARD="yes" ;;
+        --no-wizard) WIZARD="no" ;;
+    esac
 done
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -188,19 +198,31 @@ if [ ! -d "$VENV_DIR" ]; then
         python3 -m venv "$VENV_DIR"
     fi
 fi
+# tcpdump fuer den Mitschnitt fehlgeschlagener Connection-Tests (pcap, siehe
+# FailureCapture in wifi_ops.py). Ohne laeuft alles weiter, nur ohne pcap.
+if ! command -v tcpdump >/dev/null 2>&1; then
+    log "Installiere tcpdump (Mitschnitt fehlgeschlagener Tests) ..."
+    apt-get install -y -qq tcpdump >/dev/null 2>&1 \
+        || { apt-get update -qq && apt-get install -y -qq tcpdump; } \
+        || log "tcpdump liess sich nicht installieren - Mitschnitte dann ohne pcap."
+fi
+
 "$VENV_DIR/bin/pip" install --upgrade pip -q
 "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
+CONFIG_IS_NEW=0
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
     cp "$SCRIPT_DIR/config.example.yaml" "$CONFIG_DIR/config.yaml"
+    # Enthaelt nach dem Assistenten den API-Key (und spaeter ggf. Passwoerter).
+    chmod 600 "$CONFIG_DIR/config.yaml"
+    CONFIG_IS_NEW=1
     # auto_update.repo_dir vorbelegen: SCRIPT_DIR ist der Git-Checkout, von
     # dem aus dieses Skript laeuft - im Normalfall genau der richtige Pfad.
     # Nur bei einer frischen Config, nie bei einer bestehenden anfassen.
     sed -i "s#^\(\s*repo_dir:\).*#\1 \"$SCRIPT_DIR\"#" "$CONFIG_DIR/config.yaml"
-    log "$CONFIG_DIR/config.yaml aus Vorlage angelegt - bitte anpassen"
-    log "  (device.id, interface.name, server.url, server.api_key, Ziel-SSIDs)."
+    log "$CONFIG_DIR/config.yaml aus Vorlage angelegt."
 else
-    log "$CONFIG_DIR/config.yaml existiert bereits - unveraendert gelassen."
+    log "$CONFIG_DIR/config.yaml existiert bereits - Werte bleiben, bis der Assistent sie aendert."
 fi
 
 cp "$SCRIPT_DIR/wlanmon-probe.service" /etc/systemd/system/wlanmon-probe.service
@@ -223,35 +245,62 @@ systemctl enable --now wlanmon-probe-update.timer
 chmod +x "$SCRIPT_DIR/wlanmon-tool.sh"
 ln -sf "$SCRIPT_DIR/wlanmon-tool.sh" /usr/local/bin/wlanmon
 
+# ---------------------------------------------------------------------
+# 3. Einrichtungsassistent (config_wizard.py)
+# ---------------------------------------------------------------------
+# Nur in einem Terminal - bei automatisierten Installationen (Pipe,
+# cloud-init, --no-wizard) bleibt es beim Hinweis am Ende. Nach dem ersten
+# Setzen von net.ifnames=0 erst nach dem Neustart, weil sich die
+# Interface-Namen dadurch noch aendern.
+
+WIZARD_DONE=0
+run_wizard() {
+    log "=== Schritt 3: Einrichtungsassistent ==="
+    if "$VENV_DIR/bin/python3" "$SCRIPT_DIR/config_wizard.py" "$CONFIG_DIR/config.yaml"; then
+        WIZARD_DONE=1
+    else
+        log "Assistent nicht abgeschlossen - spaeter erneut mit: sudo wlanmon setup"
+    fi
+}
+
+if [ "$WIZARD" != "no" ] && [ -t 0 ] && [ -t 1 ]; then
+    if [ "$IFNAMES_JUST_SET" -eq 1 ]; then
+        log "Einrichtungsassistent folgt nach dem Neustart (Interface-Namen aendern sich noch)."
+    elif [ "$WIZARD" = "yes" ] || [ "$CONFIG_IS_NEW" -eq 1 ]; then
+        run_wizard
+    else
+        read -r -p "[setup_wlanmon_probe] Konfiguration mit dem Assistenten anpassen? [j/N] " answer || answer=""
+        case "$answer" in j|J|y|Y) run_wizard ;; esac
+    fi
+fi
+
 log ""
 log "Installation abgeschlossen."
-log "Vor dem Start pruefen: $CONFIG_DIR/config.yaml"
-log "Danach starten mit:    sudo systemctl start wlanmon-probe"
-log "Logs verfolgen mit:    sudo journalctl -u wlanmon-probe -f"
-log "Werkzeugkasten:        sudo wlanmon   (Logs, Dienste, Update, WLAN-Diagnose)"
-log ""
-log "WLAN-Watchdog (Auto-Reboot bei dauerhaft fehlendem Interface) ist"
-log "installiert, aber per Default AUS (watchdog.enabled: false in"
-log "config.yaml). Zum Aktivieren dort auf true setzen."
-log ""
-log "Automatisches Update aus dem Git-Repo ist installiert, aber per"
-log "Default AUS (auto_update.enabled: false in config.yaml). Zum"
-log "Aktivieren dort auf true setzen - repo_dir ist bereits auf"
-log "$SCRIPT_DIR vorbelegt."
-
-log ""
-log "=== WLAN-Interface(s) erkannt ==="
-WLAN_IFACES=$(ip -br link show 2>/dev/null | awk '{print $1}' | grep -E '^(wlan|wlx)' || true)
-if [ -n "$WLAN_IFACES" ]; then
-    echo "$WLAN_IFACES" | while read -r iface; do log "  - $iface"; done
-else
-    log "  Keins gefunden - USB-WLAN-Adapter gesteckt? Treiber geladen? ('dmesg | grep -i usb' pruefen.)"
-fi
-log "Passenden Namen in $CONFIG_DIR/config.yaml unter interface.name eintragen."
-
 if [ "$IFNAMES_JUST_SET" -eq 1 ]; then
     log ""
-    log "ACHTUNG: net.ifnames=0 wurde gerade erst gesetzt und wirkt erst nach"
-    log "einem Neustart - der oben gezeigte Interface-Name gilt nur bis dahin."
-    log "Nach 'sudo reboot' den Namen erneut pruefen: ip -br link"
+    log "ACHTUNG: net.ifnames=0 wurde gerade gesetzt und wirkt erst nach einem"
+    log "Neustart (danach heissen USB-Adapter wlan0/wlan1 statt wlx<mac>)."
+    log "  1. sudo reboot"
+    log "  2. sudo wlanmon setup    (Einrichtungsassistent)"
+elif [ "$WIZARD_DONE" -eq 1 ]; then
+    start_now="j"
+    if [ -t 0 ]; then
+        read -r -p "[setup_wlanmon_probe] Probe jetzt (neu) starten? [J/n] " start_now || start_now="n"
+    fi
+    case "${start_now:-j}" in
+        j|J|y|Y)
+            systemctl restart wlanmon-probe
+            log "Probe gestartet. Erste Messungen erscheinen nach etwa einer Minute im Dashboard." ;;
+        *) log "Starten mit: sudo systemctl start wlanmon-probe" ;;
+    esac
+else
+    log "Noch einzurichten: sudo wlanmon setup   (Assistent fuer $CONFIG_DIR/config.yaml)"
+    log "Danach starten mit: sudo systemctl start wlanmon-probe"
+    WLAN_IFACES=$(ip -br link show 2>/dev/null | awk '{print $1}' | grep -E '^(wlan|wlx)' || true)
+    if [ -z "$WLAN_IFACES" ]; then
+        log "Hinweis: kein WLAN-Interface gefunden - USB-WLAN-Adapter gesteckt? ('dmesg | grep -i usb')"
+    fi
 fi
+log ""
+log "Logs verfolgen mit: sudo journalctl -u wlanmon-probe -f"
+log "Werkzeugkasten:     sudo wlanmon   (Logs, Dienste, Update, WLAN-Diagnose, Einrichtung)"

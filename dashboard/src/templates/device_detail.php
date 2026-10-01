@@ -2,6 +2,7 @@
 /** @var array $device */
 /** @var array $scans */
 /** @var array $tests */
+/** @var array<string, array{pcap_size: int, has_events: bool}> $captureInfo */
 /** @var array $testsBySsid */
 /** @var array $latestPerSsid */
 /** @var array $lanTests */
@@ -17,7 +18,7 @@
 // Feste Farben je Phase im Zeitdiagramm. Ohne sie vergibt Chart.js die
 // Farben nach der Reihenfolge der Linien, und DHCP wechselte je nach SSID
 // (mit/ohne 802.1X) die Farbe.
-$timingColors = ['assoc' => '#22c55e', 'auth' => '#f59e0b', 'dhcp' => '#3b82f6'];
+$timingColors = ['assoc' => '#22c55e', 'scan' => '#8b5cf6', 'auth' => '#f59e0b', 'dhcp' => '#3b82f6'];
 
 $deviceUrl = '/devices/' . rawurlencode($device['id']);
 // Viewer ist rein lesend (siehe require_write_access() in Session.php) -
@@ -76,7 +77,7 @@ foreach ($tests as $t) {
 }
 
 /** Eine Tabellenzeile eines Connection-Tests (SSID-Tab). */
-$renderTestRow = function (array $t) use ($deviceUrl, $canWrite): void {
+$renderTestRow = function (array $t) use ($deviceUrl, $canWrite, $captureInfo): void {
     $d = json_decode((string) $t['data'], true) ?: [];
     $lkRow = is_array($d['link'] ?? null) ? $d['link'] : null;
     $connectedRow = !empty($d['connected']);
@@ -89,6 +90,7 @@ $renderTestRow = function (array $t) use ($deviceUrl, $canWrite): void {
         'IP' => $d['ip_address'] ?? '',
         __('Status') => $connectedRow ? __('verbunden') : __('fehlgeschlagen'),
         'Assoc (s)' => $d['assoc_seconds'] ?? '',
+        'Scan (s)' => $d['scan_seconds'] ?? '',
         'DHCP (s)' => $d['dhcp_seconds'] ?? '',
         __('Ping-Ziel') => $d['ping_target'] ?? '',
         'Ping RTT (ms)' => $d['ping_rtt_avg_ms'] ?? '',
@@ -97,7 +99,7 @@ $renderTestRow = function (array $t) use ($deviceUrl, $canWrite): void {
         'iperf3 Down (Mbit/s)' => $d['iperf3_download_mbps'] ?? '',
         'Signal (dBm)' => $lkRow['signal_dbm'] ?? '',
         'AP-BSSID' => $lkRow['bssid'] ?? '',
-        __('Fehler') => $d['error'] ?? '',
+        __('Fehler') => probe_error_text($d),
     ];
     ?>
     <tr data-status="<?= $connectedRow ? 'ok' : 'fail' ?>">
@@ -125,6 +127,9 @@ $renderTestRow = function (array $t) use ($deviceUrl, $canWrite): void {
         </td>
         <td>
             <?= isset($d['assoc_seconds']) ? e(number_format((float) $d['assoc_seconds'], 1)) . 's' : '–' ?>
+            <?php if (isset($d['scan_seconds'])): ?>
+                <br><span class="muted" title="<?= te('Davon Scan: bis der AP gefunden war und die Anmeldung begann') ?>"><?= te('Scan') ?> <?= e(number_format((float) $d['scan_seconds'], 1)) ?>s</span>
+            <?php endif; ?>
             <?php if (isset($d['auth_seconds'])): ?>
                 <br><span class="muted">802.1X <?= e(number_format((float) $d['auth_seconds'], 1)) ?>s</span>
             <?php endif; ?>
@@ -232,7 +237,23 @@ $renderTestRow = function (array $t) use ($deviceUrl, $canWrite): void {
             <?php endif; ?>
             <?= format_channel_load(is_array($d['channel_load'] ?? null) ? $d['channel_load'] : null) ?>
         </td>
-        <td class="muted"><?= e($d['error'] ?? '') ?></td>
+        <td class="muted">
+            <?= e(probe_error_text($d)) ?>
+            <?php $cap = $canWrite && is_string($d['capture_id'] ?? null) ? ($captureInfo[$d['capture_id']] ?? null) : null; ?>
+            <?php if ($cap !== null): ?>
+                <span class="capture-links">
+                    <?php if ($cap['pcap_size'] > 0): ?>
+                        <a href="<?= e($deviceUrl) ?>/captures/<?= e($d['capture_id']) ?>.pcap" title="<?= te('Mitschnitt des fehlgeschlagenen Verbindungsaufbaus (EAPOL, DHCP, ARP, DNS, ICMP) für Wireshark') ?>"><i class="fa-solid fa-file-arrow-down"></i> pcap (<?= e(format_bytes($cap['pcap_size'])) ?>)</a>
+                    <?php endif; ?>
+                    <?php if ($cap['has_events']): ?>
+                        <a href="<?= e($deviceUrl) ?>/captures/<?= e($d['capture_id']) ?>.txt" title="<?= te('Kernel-Ereignisse des WLAN-Adapters: Authentifizierung, Assoziation, Deauth mit Status-/Reason-Code') ?>"><i class="fa-solid fa-file-lines"></i> <?= te('Ereignisse') ?></a>
+                    <?php endif; ?>
+                    <?php if (!empty($cap['has_wpa_log'])): ?>
+                        <a href="<?= e($deviceUrl) ?>/captures/<?= e($d['capture_id']) ?>.log" title="<?= te('Log von wpa_supplicant: EAP-Methode, Server-Zertifikat, Abbruchgrund aus Sicht des Clients') ?>"><i class="fa-solid fa-file-code"></i> wpa_supplicant</a>
+                    <?php endif; ?>
+                </span>
+            <?php endif; ?>
+        </td>
         <td>
             <a href="<?= e($deviceUrl) ?>/measurements/<?= (int) $t['id'] ?>/raw" target="_blank"
                class="btn-secondary btn-small raw-link" title="<?= te('Rohdaten (JSON) in neuem Tab öffnen') ?>">
@@ -426,6 +447,7 @@ window.tabInit = {};
     $chartId = substr(md5((string) $ssid), 0, 8);
     $hasIperf3 = count(array_filter($series['iperf3'], fn($v) => $v !== null)) > 0;
     $hasAuth = count(array_filter($series['auth'], fn($v) => $v !== null)) > 0;
+    $hasScan = count(array_filter($series['scan'] ?? [], fn($v) => $v !== null)) > 0;
     $hasSignal = count(array_filter($series['signal'], fn($v) => $v !== null)) > 0;
     $ssidTests = $testsForSsid[$ssid] ?? [];
     $ssidTestCount = count($ssidTests);
@@ -442,6 +464,7 @@ window.tabInit = {};
         return $filtered === [] ? null : array_sum($filtered) / count($filtered);
     };
     $avgAssoc = $avg($series['assoc']);
+    $avgScan = $avg($series['scan'] ?? []);
     $avgDhcp = $avg($series['dhcp']);
     $avgAuth = $avg($series['auth']);
     $avgIperf3Up = $avg($series['iperf3']);
@@ -537,7 +560,8 @@ window.tabInit = {};
         <div class="kpi-tile">
             <span class="kpi-label"><i class="fa-solid fa-plug-circle-check"></i> <?= te('Ø Assoziation') ?><?= $hasAuth ? ' / 802.1X' : '' ?> / DHCP</span>
             <span class="kpi-value kpi-value-small">
-                <?= $avgAssoc !== null ? e(number_format($avgAssoc, 1)) . 's' : '–' ?><?php if ($hasAuth): ?>
+                <?= $avgAssoc !== null ? e(number_format($avgAssoc, 1)) . 's' : '–' ?><?php if ($avgScan !== null): ?>
+                <span class="muted">(<?= te('Scan') ?> <?= e(number_format($avgScan, 1)) ?>s)</span><?php endif; ?><?php if ($hasAuth): ?>
                 / <?= $avgAuth !== null ? e(number_format($avgAuth, 1)) . 's' : '–' ?>
                 <?php endif; ?>
                 / <?= $avgDhcp !== null ? e(number_format($avgDhcp, 1)) . 's' : '–' ?>
@@ -597,7 +621,7 @@ window.tabInit = {};
 
     <div class="chart-row">
         <div class="chart-col chart-col-wide">
-            <p class="muted chart-label"><?= te('Assoziation') ?> / <?= $hasAuth ? '802.1X / ' : '' ?>DHCP (s)</p>
+            <p class="muted chart-label"><?= te('Assoziation') ?><?= $hasScan ? ' (' . te('davon Scan') . ')' : '' ?> / <?= $hasAuth ? '802.1X / ' : '' ?>DHCP (s)</p>
             <canvas id="timingChart<?= $chartId ?>" height="60"></canvas>
         </div>
     </div>
@@ -729,6 +753,18 @@ window.tabInit = {};
                         borderColor: '<?= $timingColors['assoc'] ?>',
                         backgroundColor: '<?= $timingColors['assoc'] ?>',
                     },
+                    <?php if ($hasScan): ?>
+                    {
+                        // Teil der Assoziationszeit, daher gestrichelt.
+                        label: <?= tjson('davon Scan (s)') ?>,
+                        data: <?= json_encode($series['scan'], JSON_HEX_TAG) ?>,
+                        borderWidth: 2,
+                        borderDash: [5, 4],
+                        spanGaps: true,
+                        borderColor: '<?= $timingColors['scan'] ?>',
+                        backgroundColor: '<?= $timingColors['scan'] ?>',
+                    },
+                    <?php endif; ?>
                     <?php if ($hasAuth): ?>
                     {
                         label: '802.1X (s)',
@@ -952,7 +988,7 @@ window.tabInit = {};
                     <?php endif; ?>
                 </td>
                 <td class="muted"><?= e(format_counters(is_array($d['counters'] ?? null) ? $d['counters'] : null)) ?></td>
-                <td class="muted"><?= e($d['error'] ?? '') ?></td>
+                <td class="muted"><?= e(probe_error_text($d)) ?></td>
                 <td>
                     <a href="<?= e($deviceUrl) ?>/measurements/<?= (int) $t['id'] ?>/raw" target="_blank"
                        class="btn-secondary btn-small raw-link" title="<?= te('Rohdaten (JSON) in neuem Tab öffnen') ?>">

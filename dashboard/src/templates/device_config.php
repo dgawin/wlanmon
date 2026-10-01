@@ -348,6 +348,12 @@ $renderTarget = function (string $idx, array $t) use ($securityOptions, $portalT
                    value="<?= e($config['connection_tests']['iperf3_min_interval_minutes'] ?? 0) ?>">
             <span class="muted"><?= te('0 = bei jedem Test. Verbindung, DHCP, Ping und Portal-Check laufen weiter in jedem Zyklus, nur die Durchsatzmessung wird seltener - sonst zeigt der Verlauf vor allem die Last der eigenen Tests. Empfehlung: 60. Taste 3 am Gerät misst immer mit. Ab Probe 1.0.1.14.') ?></span>
         </label>
+        <label class="check-label">
+            <input type="checkbox" name="ct_capture_on_failure" value="1"
+                   <?= ($config['connection_tests']['capture_on_failure'] ?? true) ? 'checked' : '' ?>>
+            <?= te('Fehlgeschlagene Tests mitschneiden') ?>
+        </label>
+        <p class="muted"><?= te('pcap (EAPOL, DHCP, ARP, DNS, ICMP) und Adapter-Ereignisse (Authentifizierung, Assoziation, Deauth) eines fehlgeschlagenen Verbindungsaufbaus, Download in der Testtabelle. Enthält MAC-Adressen und ggf. 802.1X-Identitäten; Aufbewahrung unter Datenhaltung. pcap braucht tcpdump auf der Probe. Ab Probe 1.0.1.35.') ?></p>
     </fieldset>
 
     <?php $lan = $config['connection_tests']['iperf3_lan'] ?? []; ?>

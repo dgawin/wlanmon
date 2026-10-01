@@ -18,10 +18,12 @@ import logging
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -533,7 +535,17 @@ class ConnectionTestResult:
     ssid: str
     security: str
     connected: bool
+    # Start von wpa_supplicant bis zur 802.11-Assoziation, inkl. Scan.
     assoc_seconds: float | None = None
+    # Davon der Scan: Start bis wpa_supplicant einen AP gefunden hat und die
+    # Anmeldung beginnt. Reine Assoziation = assoc_seconds - scan_seconds.
+    # Bei fehlgeschlagener Assoziation gesetzt, wenn der Scan noch fertig wurde.
+    scan_seconds: float | None = None
+    # Nur bei fehlgeschlagenem Test mit capture_on_failure: ID des Mitschnitts
+    # (pcap + iw-Ereignisse), den der Sender separat hochlaedt (FailureCapture).
+    capture_id: str | None = None
+    # Strukturierte Fassung von "error" fuer das Dashboard (siehe _err()).
+    error_codes: list[dict] | None = None
     # Nur bei 802.1X: Dauer von der Assoziation bis zum abgeschlossenen
     # EAP-/4-Way-Handshake, plus die verwendete EAP-Methode.
     auth_seconds: float | None = None
@@ -692,22 +704,24 @@ _PHASE2 = {
 }
 
 
-def _validate_eap(eap: dict | None) -> str | None:
+def _validate_eap(eap: dict | None) -> tuple[str, dict] | None:
     """Prueft die 802.1X-Angaben eines Ziels, bevor irgendetwas gestartet
-    wird. Rueckgabe: Fehlertext oder None, wenn alles Noetige da ist."""
+    wird. Rueckgabe: (Fehlertext, Fehlercode) oder None, wenn alles Noetige
+    da ist."""
     if not eap:
-        return "Am Ziel fehlt der Block 'eap' (Methode, Benutzername ...)"
+        return "Am Ziel fehlt der Block 'eap' (Methode, Benutzername ...)", _err("eap_block_missing")
     method = str(eap.get("method") or "peap").lower()
     if method not in EAP_METHODS:
-        return f"Unbekannte EAP-Methode '{method}' (erlaubt: peap, ttls, tls)"
+        return (f"Unbekannte EAP-Methode '{method}' (erlaubt: peap, ttls, tls)",
+                _err("eap_method_unknown", method=method))
     if not eap.get("identity"):
-        return "Benutzername/Identity fehlt"
+        return "Benutzername/Identity fehlt", _err("eap_identity_missing")
     if method in ("peap", "ttls") and not eap.get("password"):
-        return "Passwort fehlt"
+        return "Passwort fehlt", _err("eap_password_missing")
     if method == "tls" and not (eap.get("client_cert") and eap.get("private_key")):
-        return "EAP-TLS braucht Client-Zertifikat und privaten Schluessel"
+        return "EAP-TLS braucht Client-Zertifikat und privaten Schluessel", _err("eap_tls_cert_missing")
     if not shutil.which("wpa_cli"):
-        return "wpa_cli nicht installiert (Paket wpasupplicant)"
+        return "wpa_cli nicht installiert (Paket wpasupplicant)", _err("wpa_cli_missing")
     return None
 
 
@@ -716,6 +730,22 @@ def _hexstr(value: str) -> str:
     Zeichen in Benutzername/Passwort (Anfuehrungszeichen, Umlaute, Zeilen-
     umbrueche) unkritisch - sie koennen die Config-Datei nicht aufbrechen."""
     return str(value).encode("utf-8").hex()
+
+
+# --------------------------------------------------------------------------
+# Fehlercodes
+# --------------------------------------------------------------------------
+# Neben dem deutschen Fehlertext (fuer das Probe-Log) schickt jeder
+# fehlgeschlagene Test "error_codes": eine Liste von Bausteinen
+# {"code": ..., Parameter ...}, z.B. [{"code": "assoc_failed"},
+# {"code": "sae_password_wrong", "status": 1}]. Das Dashboard formuliert
+# daraus den Text in der Sprache der Oberflaeche bzw. des Alarms
+# (src/ProbeError.php) - die Probe liefert nur die Bedeutung.
+# Neue Codes dort mit Text (de) und Uebersetzung (lang/en.php) ergaenzen.
+
+def _err(code: str, **params: object) -> dict:
+    """Ein Baustein fuer error_codes; Parameter mit None werden weggelassen."""
+    return {"code": code, **{k: v for k, v in params.items() if v is not None}}
 
 
 def _write_secret_file(path: Path, text: str) -> None:
@@ -781,7 +811,15 @@ def _wait_for_wpa_completed(interface: str, timeout: int) -> bool:
         res = _run(["wpa_cli", "-i", interface, "status"], check=False, timeout=5)
         if "wpa_state=COMPLETED" in res.stdout:
             return True
-        time.sleep(0.5)
+        # Die Assoziation stand schon (Aufrufer). Faellt wpa_supplicant wieder
+        # auf DISCONNECTED/SCANNING zurueck, hat der AP abgelehnt (802.1X-
+        # Ablehnung, Deauth Reason 23; falscher PSK, Reason 15) - sofort
+        # abbrechen statt bis zum Timeout zu warten. Sonst startet
+        # wpa_supplicant einen zweiten Anmeldeversuch (doppelte Last fuer den
+        # RADIUS-Server, Kontosperren) und der Test blockiert ~20 s laenger.
+        if any(f"wpa_state={s}" in res.stdout for s in ("DISCONNECTED", "SCANNING", "INACTIVE")):
+            return False
+        time.sleep(0.1)  # Takt = Messgenauigkeit von auth_seconds
     return False
 
 
@@ -797,23 +835,63 @@ def _stop_wpa(wpa_proc: subprocess.Popen | None) -> None:
         wpa_proc.kill()
 
 
-_WPA_ERROR_PATTERNS: tuple[tuple[str, str], ...] = (
+# (Regex, deutscher Text, Fehlercode, Namen der Regex-Gruppen als Parameter).
+# Gruppen, die keinen Parameter bilden, als "(?:...)" schreiben.
+_WPA_ERROR_PATTERNS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     (r"Certificate verification failed, error \d+ \(([^)]*)\)",
-     "Server-Zertifikat nicht akzeptiert: {0}"),
+     "Server-Zertifikat nicht akzeptiert: {0}", "server_cert_rejected", ("reason",)),
     (r"E=691|MSCHAPV2: Authentication failed|MSCHAPV2.*Failure",
-     "vom RADIUS-Server abgelehnt (Benutzername/Passwort falsch oder Konto gesperrt)"),
+     "vom RADIUS-Server abgelehnt (Benutzername/Passwort falsch oder Konto gesperrt)",
+     "radius_rejected", ()),
     (r"CTRL-EVENT-EAP-TIMEOUT-FAILURE|EAP: Timeout",
-     "keine Antwort vom RADIUS-Server (EAP-Timeout)"),
+     "keine Antwort vom RADIUS-Server (EAP-Timeout)", "radius_timeout", ()),
     (r"MD4|Failed to initialize EAP method",
-     "EAP-Methode konnte nicht initialisiert werden (fehlt MD4/Legacy-Provider in OpenSSL?)"),
-    (r"SSL_connect|TLS: .*(handshake failed|alert)",
-     "TLS-Handshake mit dem RADIUS-Server fehlgeschlagen"),
+     "EAP-Methode konnte nicht initialisiert werden (fehlt MD4/Legacy-Provider in OpenSSL?)",
+     "eap_method_init_failed", ()),
+    (r"SSL_connect|TLS: .*(?:handshake failed|alert)",
+     "TLS-Handshake mit dem RADIUS-Server fehlgeschlagen", "tls_handshake_failed", ()),
+    # EAP-Failure, nachdem das Server-Zertifikat schon da war: der TLS-Tunnel
+    # stand, abgelehnt wurde die innere Anmeldung (Phase 2, bei PEAP/TTLS
+    # z.B. MSCHAPv2). Ohne -d protokolliert wpa_supplicant den inneren Fehler
+    # selbst nicht, die Reihenfolge PEER-CERT ... FAILURE schon. Bei PEAP steht
+    # zusaetzlich "EAP-TLV: TLV Result - Failure" im Log (Ergebnis der inneren
+    # Anmeldung) - das greift auch bei fortgesetzter TLS-Sitzung ohne
+    # Zertifikatszeilen. Mit absichtlich falschem PEAP-Passwort nachgewiesen
+    # (pcap: Tunnel aufgebaut, EAP-Failure nach der MSCHAPv2-Antwort; Log
+    # mit PEER-CERT depth=3..0 und TLV-Failure).
+    (r"(?s)CTRL-EVENT-EAP-PEER-CERT.*CTRL-EVENT-EAP-FAILURE|EAP-TLV: TLV Result - Failure",
+     "vom RADIUS-Server in Phase 2 abgelehnt (innere Anmeldung: Benutzername/Passwort, Konto oder Richtlinie)",
+     "eap_rejected_phase2", ()),
     (r"CTRL-EVENT-EAP-FAILURE",
-     "EAP-Authentifizierung fehlgeschlagen (EAP-Failure)"),
-    (r"CTRL-EVENT-SSID-TEMP-DISABLED.*reason=(\w+)",
-     "Netz voruebergehend gesperrt (reason={0})"),
+     "EAP-Authentifizierung fehlgeschlagen (EAP-Failure)", "eap_failure", ()),
+    # WPA3 (SAE, auth_type=3): Commit angenommen, Confirm abgelehnt (Schritt 2,
+    # Status 1) - der AP konnte die Bestaetigung nicht pruefen, die Schluessel
+    # passen nicht zusammen. Auf einem NanoPi mit absichtlich falschem
+    # WPA3-Passwort so nachgewiesen.
+    (r"CTRL-EVENT-AUTH-REJECT \S+ auth_type=3 auth_transaction=2 status_code=(1)\b",
+     "WPA3-Passwort vermutlich falsch: der AP lehnt die SAE-Bestaetigung ab (Status 1)",
+     "sae_password_wrong", ("status",)),
+    # Andere SAE-Ablehnungen (meist schon beim Commit): Einstellungen passen
+    # nicht, z.B. H2E/Hunting-and-Pecking, Gruppe oder PMF.
+    (r"CTRL-EVENT-AUTH-REJECT \S+ auth_type=3 auth_transaction=(\d+) status_code=(\d+)",
+     "WPA3 (SAE) vom AP abgelehnt (Schritt {0}, Status {1}) - SAE-Einstellungen pruefen (H2E, Gruppe, PMF)",
+     "sae_rejected", ("step", "status")),
+    (r"CTRL-EVENT-AUTH-REJECT \S+ auth_type=(\d+) auth_transaction=\d+ status_code=(\d+)",
+     "Authentifizierung vom AP abgelehnt (auth_type {0}, Status {1})",
+     "auth_rejected", ("auth_type", "status")),
+    # Spezifische Ursachen vor der allgemeinen Sperre unten - die steht bei
+    # einem falschen PSK ebenfalls im Log und hat frueher immer gewonnen.
     (r"WPA: 4-Way Handshake failed - pre-shared key may be incorrect",
-     "PSK vermutlich falsch (4-Way-Handshake fehlgeschlagen)"),
+     "PSK vermutlich falsch (4-Way-Handshake fehlgeschlagen)", "psk_wrong", ()),
+    (r"CTRL-EVENT-SSID-TEMP-DISABLED.*reason=WRONG_KEY",
+     "PSK vermutlich falsch (wpa_supplicant: WRONG_KEY)", "psk_wrong", ()),
+    (r"CTRL-EVENT-SSID-TEMP-DISABLED.*reason=(\w+)",
+     "Netz voruebergehend gesperrt (reason={0})", "network_disabled", ("reason",)),
+    # Zuletzt: der AP hat getrennt, ohne dass oben etwas Genaueres im Log
+    # steht (z.B. 802.1X-Ablehnung nur als Deauth sichtbar). Selbst
+    # ausgeloeste Trennungen (locally_generated=1) zaehlen nicht.
+    (r"CTRL-EVENT-DISCONNECTED bssid=\S+ reason=(\d+)\b(?! locally_generated)",
+     "vom AP getrennt (Deauth Reason {0})", "deauth_by_ap", ("reason",)),
 )
 
 
@@ -844,11 +922,11 @@ def _scan_cache_for(interface: str, ssid: str) -> list[ScanResult] | None:
 
 def _association_failure_detail(
     log_path: str, ssid: str, security: str, seen: list[ScanResult] | None
-) -> str:
-    """Grund fuer einen Assoziations-Timeout. Hat wpa_supplicant gar keinen
-    Versuch gestartet, sagt das rohe Log nichts - dann aus dem Scan-Cache:
-    SSID nicht gesehen (Reichweite/Band/Name) oder gesehen, aber der
-    Sicherheitstyp passt nicht zur Konfiguration."""
+) -> tuple[str, list[dict]]:
+    """Grund fuer eine gescheiterte Assoziation als (Text, Fehlercodes). Hat
+    wpa_supplicant gar keinen Versuch gestartet, sagt das rohe Log nichts -
+    dann aus dem Scan-Cache: SSID nicht gesehen (Reichweite/Band/Name) oder
+    gesehen, aber der Sicherheitstyp passt nicht zur Konfiguration."""
     try:
         text = Path(log_path).read_text(errors="replace")
     except OSError:
@@ -859,7 +937,8 @@ def _association_failure_detail(
     if not seen:
         return (
             f'SSID "{ssid}" nicht gefunden: im Scan während des Tests nicht gesehen '
-            f"(außer Reichweite, anderes Band oder Name weicht ab)."
+            f"(außer Reichweite, anderes Band oder Name weicht ab).",
+            [_err("ssid_not_found", ssid=ssid)],
         )
     best = max(seen, key=lambda n: n.signal_dbm if n.signal_dbm is not None else -999.0)
     bands = ", ".join(sorted({_band_label(n.frequency_mhz) for n in seen}))
@@ -870,23 +949,76 @@ def _association_failure_detail(
     signal = f", bestes Signal {best.signal_dbm:.0f} dBm" if best.signal_dbm is not None else ""
     return (
         f'SSID "{ssid}" gefunden ({bands}{signal}), aber kein Verbindungsversuch - '
-        f"Sicherheitstyp passt vermutlich nicht: konfiguriert {security}, Netz meldet {net_security}."
+        f"Sicherheitstyp passt vermutlich nicht: konfiguriert {security}, Netz meldet {net_security}.",
+        [_err(
+            "security_mismatch", ssid=ssid,
+            # Frequenzen statt Band-Texten - das Dashboard formuliert die Baender.
+            frequencies_mhz=sorted({n.frequency_mhz for n in seen if n.frequency_mhz}),
+            signal_dbm=round(best.signal_dbm) if best.signal_dbm is not None else None,
+            configured=security,
+            network=sorted({n.security or "?" for n in seen}),
+            pmf_required=any(n.pmf == "required" for n in seen),
+        )],
     )
 
 
-def _wpa_error_summary(log_path: str) -> str:
-    """Kurze, lesbare Fehlerursache aus dem wpa_supplicant-Log. Faellt auf
-    das Log-Ende zurueck, wenn nichts Bekanntes gefunden wird."""
+def _wpa_error_summary(log_path: str, waited: float | None = None) -> tuple[str, list[dict]]:
+    """Kurze, lesbare Fehlerursache aus dem wpa_supplicant-Log als (Text,
+    Fehlercodes). Faellt auf die relevanten Zeilen am Log-Ende zurueck, wenn
+    nichts Bekanntes gefunden wird. waited = Sekunden, die auf den Abschluss
+    gewartet wurde (fuer die Meldung, wenn der Austausch haengen blieb)."""
     try:
         text = Path(log_path).read_text(errors="replace")
     except OSError:
-        return ""
+        return "", []
     log.debug("wpa_supplicant-Log:\n%s", text)
-    for pattern, message in _WPA_ERROR_PATTERNS:
+    for pattern, message, code, names in _WPA_ERROR_PATTERNS:
         m = re.search(pattern, text)
         if m:
-            return message.format(*m.groups())
-    return _tail(log_path)
+            params = {
+                name: (int(value) if value is not None and value.isdigit() else value)
+                for name, value in zip(names, m.groups())
+            }
+            return message.format(*m.groups()), [_err(code, **params)]
+    stalled = _eap_stall_summary(text)
+    if stalled:
+        message, code = stalled
+        waited_s = round(waited) if waited is not None else None
+        if waited_s is not None:
+            message += f" - nach {waited_s} s ohne Ergebnis abgebrochen"
+        code["waited_s"] = waited_s
+        return message, [_err(**code)]
+    tail = _tail(log_path)
+    # Unbekanntes Fehlerbild: rohe Log-Zeilen, die das Dashboard unuebersetzt zeigt.
+    return tail, ([_err("wpa_log", text=tail[len("wpa_supplicant-Log: "):])] if tail else [])
+
+
+def _eap_stall_summary(text: str) -> tuple[str, dict] | None:
+    """EAP hat begonnen, aber weder Erfolg noch Fehlschlag gemeldet - der
+    Austausch ist irgendwo haengen geblieben (meist antwortet der RADIUS-
+    Server nicht mehr). Sagt, wie weit er gekommen ist: (Text, Fehlercode)."""
+    if "CTRL-EVENT-EAP-SUCCESS" in text:
+        return "EAP erfolgreich, aber 4-Way-Handshake danach nicht abgeschlossen", {"code": "eap_no_4way"}
+    cert = re.search(r"CTRL-EVENT-EAP-PEER-CERT depth=0 subject='([^']*)'", text)
+    if cert or "CTRL-EVENT-EAP-PEER-CERT" in text:
+        subject = cert.group(1) if cert and cert.group(1) else None
+        return (
+            f"Server-Zertifikat erhalten{f' ({subject})' if subject else ''}, danach keine Antwort mehr vom "
+            "RADIUS-Server (Phase 2 / innere Authentifizierung nicht abgeschlossen)",
+            {"code": "eap_stalled_after_cert", "subject": subject},
+        )
+    if "CTRL-EVENT-EAP-METHOD" in text:
+        return (
+            "EAP-Methode ausgehandelt, aber keine Antwort vom RADIUS-Server "
+            "(TLS-Tunnel nicht aufgebaut)",
+            {"code": "eap_stalled_method"},
+        )
+    if "CTRL-EVENT-EAP-STARTED" in text:
+        return (
+            "EAP gestartet, aber keine Methode ausgehandelt (RADIUS-Server antwortet nicht?)",
+            {"code": "eap_stalled_start"},
+        )
+    return None
 
 
 def _write_wpa_supplicant_conf(
@@ -964,6 +1096,7 @@ def run_connection_test(
     captive_portal_url: str = "",
     portal_login: dict | None = None,
     random_mac: bool = False,
+    capture_on_failure: bool = False,
 ) -> ConnectionTestResult:
     """
     Führt einen vollständigen Verbindungstest gegen ein SSID durch:
@@ -979,7 +1112,9 @@ def run_connection_test(
     if is_eap:
         problem = _validate_eap(eap)
         if problem:
-            result.error = f"802.1X: {problem}"
+            text, code = problem
+            result.error = f"802.1X: {text}"
+            result.error_codes = [_err("eap_config_invalid"), code]
             return result
         result.eap_method = str((eap or {}).get("method") or "peap").lower()
         # Zertifikate/Schluessel liegen nur fuer die Dauer des Tests in einem
@@ -992,6 +1127,7 @@ def run_connection_test(
         if eap_workdir is not None:
             shutil.rmtree(eap_workdir, ignore_errors=True)
         result.error = f"WLAN-Konfiguration nicht erzeugbar: {exc}"
+        result.error_codes = [_err("config_failed", detail=str(exc))]
         return result
     wpa_proc: subprocess.Popen | None = None
     wpa_log_path = tempfile.NamedTemporaryFile(
@@ -1002,6 +1138,7 @@ def run_connection_test(
     portal_module = None       # Login-Modul, falls ein Portal-Login lief
     portal_ctx: PortalContext | None = None
     portal_session: dict | None = None
+    capture: FailureCapture | None = None
     try:
         if random_mac:
             # Vor dem Hochfahren: eine Schnittstelle laesst sich nur im
@@ -1029,6 +1166,12 @@ def run_connection_test(
         stale_socket = Path("/var/run/wpa_supplicant") / interface
         stale_socket.unlink(missing_ok=True)
 
+        if capture_on_failure:
+            # Vor wpa_supplicant starten, damit der ganze Verbindungsaufbau
+            # drin ist; behalten wird er nur bei einem Fehlschlag (finally).
+            capture = FailureCapture(interface)
+            capture.start()
+
         t0 = time.monotonic()
         with open(wpa_log_path, "w") as wpa_log:
             wpa_proc = subprocess.Popen(
@@ -1037,19 +1180,29 @@ def run_connection_test(
                     "-i", interface,
                     "-c", str(conf_path),
                     "-D", "nl80211",
+                    # Beim Mitschnitt: EAPOL nicht ueber den nl80211-Control-
+                    # Port, sondern klassisch ueber das Interface schicken -
+                    # sonst sieht tcpdump auf wlan0 keinen einzigen EAPOL-
+                    # Rahmen (auf einem NanoPi/mt7921u nachgewiesen: pcap bei
+                    # 802.1X-Fehlschlag leer). Fuer den AP aendert sich nichts.
+                    *(["-p", "control_port=0"] if capture is not None else []),
                 ],
                 stdout=wpa_log,
                 stderr=subprocess.STDOUT,
             )
 
-        if not _wait_for_association(interface, connect_timeout):
+        associated, result.scan_seconds, gave_up = _wait_for_association(interface, connect_timeout, t0)
+        if not associated:
             # Scan-Cache lesen, solange die Scans von wpa_supplicant frisch
             # sind; dann wpa_supplicant beenden, damit sein Log vollstaendig
             # in der Datei steht (stdout in eine Datei ist gepuffert).
             seen = _scan_cache_for(interface, ssid)
             _stop_wpa(wpa_proc)
-            detail = _association_failure_detail(wpa_log_path, ssid, security, seen)
-            result.error = f"Assoziation fehlgeschlagen (Timeout). {detail}"
+            detail, codes = _association_failure_detail(wpa_log_path, ssid, security, seen)
+            # "(Timeout)" nur, wenn wirklich bis zum Ende gewartet wurde - bei
+            # einer Sperre durch wpa_supplicant hat der AP aktiv abgelehnt.
+            result.error = f"Assoziation fehlgeschlagen{'' if gave_up else ' (Timeout)'}. {detail}"
+            result.error_codes = [_err("assoc_failed", timeout=not gave_up)] + codes
             return result
         result.assoc_seconds = round(time.monotonic() - t0, 2)
 
@@ -1063,17 +1216,16 @@ def run_connection_test(
         t_auth = time.monotonic()
         remaining = max(5, connect_timeout - int(time.monotonic() - t0))
         if not _wait_for_wpa_completed(interface, remaining):
+            waited = time.monotonic() - t_auth
             _stop_wpa(wpa_proc)
             if is_eap:
-                result.error = (
-                    "802.1X-Authentifizierung fehlgeschlagen: "
-                    f"{_wpa_error_summary(wpa_log_path)}"
-                )
+                summary, codes = _wpa_error_summary(wpa_log_path, waited)
+                result.error = f"802.1X-Authentifizierung fehlgeschlagen: {summary}"
+                result.error_codes = [_err("auth_8021x_failed")] + codes
             else:
-                result.error = (
-                    "WPA-Schlüsselaustausch fehlgeschlagen: "
-                    f"{_wpa_error_summary(wpa_log_path)}"
-                )
+                summary, codes = _wpa_error_summary(wpa_log_path, waited)
+                result.error = f"WPA-Schlüsselaustausch fehlgeschlagen: {summary}"
+                result.error_codes = [_err("key_exchange_failed")] + codes
             return result
         if is_eap:
             # Dauer getrennt von der reinen Assoziation ausgewiesen -
@@ -1081,8 +1233,9 @@ def run_connection_test(
             result.auth_seconds = round(time.monotonic() - t_auth, 2)
 
         log.info(
-            "SSID %s: Verbindung steht (assoc %.1fs%s) - starte DHCP",
+            "SSID %s: Verbindung steht (assoc %.1fs, davon Scan %s%s) - starte DHCP",
             ssid, result.assoc_seconds or 0.0,
+            f"{result.scan_seconds:.1f}s" if result.scan_seconds is not None else "?",
             f", 802.1X {result.auth_seconds:.1f}s" if result.auth_seconds is not None else "",
         )
         _clear_promiscuous_mode(interface)
@@ -1095,9 +1248,9 @@ def run_connection_test(
             # dahinter kommt aber nichts zurueck. Damit sich das eingrenzen
             # laesst (anderer AP? VLAN ohne DHCP?), AP, Signal und die Zahl
             # der waehrenddessen empfangenen/gesendeten Pakete mitschicken.
-            result.error = "Kein DHCP-Lease erhalten (Timeout)" + _dhcp_failure_detail(
-                interface, counters_dhcp_before, result
-            )
+            detail, params = _dhcp_failure_detail(interface, counters_dhcp_before, result)
+            result.error = "Kein DHCP-Lease erhalten (Timeout)" + detail
+            result.error_codes = [_err("dhcp_timeout", **params)]
             return result
         result.dhcp_seconds = round(time.monotonic() - t1, 2)
         result.ip_address = ip_addr
@@ -1233,6 +1386,7 @@ def run_connection_test(
 
     except Exception as exc:  # noqa: BLE001 - Testergebnis statt Absturz
         result.error = str(exc)
+        result.error_codes = [_err("internal_error", detail=str(exc))]
         return result
 
     finally:
@@ -1250,6 +1404,16 @@ def run_connection_test(
                 )
             except Exception:  # noqa: BLE001
                 log.debug("Portal-Abmeldung fehlgeschlagen", exc_info=True)
+        # Vor dem Aufraeumen stoppen - dessen Disconnect gehoert nicht zum Fehlerbild.
+        if capture is not None:
+            if not result.connected:
+                # Das Log von wpa_supplicant ist erst nach dessen Ende vollstaendig
+                # (gepufferte Ausgabe). Nach Assoziations-/802.1X-Fehlern ist er
+                # schon beendet, nach einem DHCP-Fehlschlag laeuft er noch - dann
+                # erscheint am Ende der Ereignisse ein eigener Disconnect
+                # ("local request"), der das Testende markiert.
+                _stop_wpa(wpa_proc)
+            result.capture_id = capture.finish(keep=not result.connected, wpa_log_path=wpa_log_path)
         _cleanup_connection(interface, wpa_proc, restore_mac)
         conf_path.unlink(missing_ok=True)
         if eap_workdir is not None:
@@ -1261,12 +1425,13 @@ def _dhcp_failure_detail(
     interface: str,
     counters_before: dict[str, int] | None,
     result: "ConnectionTestResult",
-) -> str:
+) -> tuple[str, dict]:
     """Kurzer Zusatz fuer die Fehlermeldung "kein DHCP-Lease": an welchem AP
     (BSSID) der Client haengt, mit welchem Signal, und wie viele Pakete
     waehrend der DHCP-Phase ankamen/rausgingen. Rx = 0 heisst: vom Netz
-    kommt gar nichts zurueck. Setzt nebenbei result.link/counters, damit das
-    Dashboard die Werte auch fuer fehlgeschlagene Tests zeigt. Reine
+    kommt gar nichts zurueck. Rueckgabe (Textzusatz, Parameter fuer den
+    Fehlercode "dhcp_timeout"). Setzt nebenbei result.link/counters, damit
+    das Dashboard die Werte auch fuer fehlgeschlagene Tests zeigt. Reine
     Diagnose - darf nie selbst einen Fehler ausloesen."""
     try:
         link = _wifi_link_info(interface)
@@ -1274,21 +1439,28 @@ def _dhcp_failure_detail(
         delta = _counter_delta(counters_before, _read_counters(interface))
         result.counters = delta
         parts = []
+        params: dict = {}
         if link:
             if link.get("bssid"):
                 parts.append(f"AP {link['bssid']}")
+                params["bssid"] = link["bssid"]
             if link.get("signal_dbm") is not None:
                 parts.append(f"{link['signal_dbm']} dBm")
+                params["signal_dbm"] = link["signal_dbm"]
             if link.get("frequency_mhz"):
                 parts.append(f"{link['frequency_mhz']} MHz")
+                params["frequency_mhz"] = link["frequency_mhz"]
         else:
             parts.append("Link bereits getrennt")
+            params["link_down"] = True
         if delta:
             parts.append(f"waehrend DHCP Rx {delta['rx_packets']} / Tx {delta['tx_packets']} Pakete")
-        return f" [{', '.join(parts)}]" if parts else ""
+            params["rx_packets"] = delta["rx_packets"]
+            params["tx_packets"] = delta["tx_packets"]
+        return (f" [{', '.join(parts)}]" if parts else ""), params
     except Exception:  # noqa: BLE001
         log.debug("DHCP-Fehlerdetails nicht auslesbar", exc_info=True)
-        return ""
+        return "", {}
 
 
 def _log_network_debug(interface: str) -> None:
@@ -1320,12 +1492,30 @@ def _log_network_debug(interface: str) -> None:
         log.debug("%s:\n%s", label, (result.stdout or result.stderr).strip())
 
 
+# Zeilen im wpa_supplicant-Log ohne Aussage zur Fehlerursache: P2P-Geraet,
+# DSCP-Policy und das Herunterfahren, das _stop_wpa() selbst ausloest
+# (Deauth reason=3 locally_generated=1, deinit, TERMINATING). Am Log-Ende
+# verdraengen sie sonst die eigentlich interessanten EAP-Zeilen.
+_WPA_NOISE_RE = re.compile(
+    r"^p2p-dev-|CTRL-EVENT-DSCP-POLICY|nl80211: deinit|CTRL-EVENT-TERMINATING"
+    r"|CTRL-EVENT-DISCONNECTED .*reason=3 locally_generated=1"
+    r"|Successfully initialized wpa_supplicant|CTRL-EVENT-REGDOM-CHANGE"
+)
+
+
 def _tail(path: str, max_chars: int = 500) -> str:
-    """Letzte Zeilen einer Log-Datei für Fehlermeldungen, gekürzt."""
+    """Letzte relevante Zeilen einer wpa_supplicant-Log-Datei für
+    Fehlermeldungen, gekürzt."""
     try:
-        content = Path(path).read_text(errors="replace").strip()
+        lines = Path(path).read_text(errors="replace").splitlines()
     except OSError:
         return ""
+    relevant = [
+        re.sub(r" hash=[0-9a-f]+", "", line.strip())
+        for line in lines
+        if line.strip() and not _WPA_NOISE_RE.search(line)
+    ]
+    content = " | ".join(relevant)
     if not content:
         return ""
     if len(content) > max_chars:
@@ -1333,14 +1523,56 @@ def _tail(path: str, max_chars: int = 500) -> str:
     return f"wpa_supplicant-Log: {content}"
 
 
-def _wait_for_association(interface: str, timeout: int) -> bool:
-    deadline = time.monotonic() + timeout
+# wpa_state-Werte, die erst nach dem Scan kommen: wpa_supplicant hat einen
+# passenden AP gefunden und beginnt die Anmeldung daran.
+_POST_SCAN_STATES = (
+    "wpa_state=AUTHENTICATING", "wpa_state=ASSOCIATING", "wpa_state=ASSOCIATED",
+    "wpa_state=4WAY_HANDSHAKE", "wpa_state=GROUP_HANDSHAKE", "wpa_state=COMPLETED",
+)
+
+
+def _wait_for_association(
+    interface: str, timeout: int, t0: float
+) -> tuple[bool, float | None, bool]:
+    """Wartet auf die 802.11-Assoziation ("iw link" zeigt "Connected to").
+
+    Rueckgabe (verbunden, scan_seconds, aufgegeben):
+    - scan_seconds: Sekunden seit t0, bis wpa_supplicant den Scan beendet und
+      die Anmeldung an einem AP beginnt (wpa_state verlaesst SCANNING).
+      assoc_seconds bleibt wie bisher die Gesamtzeit inkl. Scan; die reine
+      Assoziation ist assoc_seconds - scan_seconds. None, wenn das Scan-Ende
+      nicht beobachtet wurde (z.B. AP nie gefunden).
+    - aufgegeben: wpa_supplicant hat das Netz gesperrt ([TEMP-DISABLED], z.B.
+      nach abgelehnter WPA3-Anmeldung) - dann sofort zurueck statt bis zum
+      Timeout weitere Anmeldeversuche laufen zu lassen.
+
+    wpa_cli status wird nur bis zum Scan-Ende abgefragt, list_networks danach
+    hoechstens einmal pro Sekunde - so bleibt der 0,1-s-Takt von "iw link"
+    fuer assoc_seconds praktisch unveraendert."""
+    deadline = t0 + timeout
+    scan_seconds: float | None = None
+    next_disabled_check = 0.0
     while time.monotonic() < deadline:
+        if scan_seconds is None:
+            status = _run(["wpa_cli", "-i", interface, "status"], check=False, timeout=5)
+            if any(state in status.stdout for state in _POST_SCAN_STATES):
+                scan_seconds = round(time.monotonic() - t0, 2)
         result = _run(["iw", "dev", interface, "link"], check=False)
         if "Connected to" in result.stdout:
-            return True
-        time.sleep(1)
-    return False
+            if scan_seconds is None:
+                # Anmeldung lief zwischen zwei Abfragen komplett durch - das
+                # Scan-Ende liegt dann kurz vor diesem Zeitpunkt.
+                scan_seconds = round(time.monotonic() - t0, 2)
+            return True, scan_seconds, False
+        if scan_seconds is not None and time.monotonic() >= next_disabled_check:
+            next_disabled_check = time.monotonic() + 1.0
+            networks = _run(["wpa_cli", "-i", interface, "list_networks"], check=False, timeout=5)
+            if "[TEMP-DISABLED]" in networks.stdout:
+                return False, scan_seconds, True
+        # Kurzer Takt: die Abfrage bestimmt die Messgenauigkeit von
+        # assoc_seconds (bei 1 s landeten alle Werte auf vollen Sekunden).
+        time.sleep(0.1)
+    return False, scan_seconds, False
 
 
 def _clear_promiscuous_mode(interface: str) -> None:
@@ -1411,7 +1643,16 @@ def _run_dhcp(interface: str, timeout: int) -> str | None:
             # meldet trotzdem einen Erfolg - eine solche Adresse kann
             # aber nicht ins eigentliche Netz routen (live beobachtet:
             # anschliessender iperf3-Test lief prompt in einen Timeout).
-            _run(["dhcpcd", "-L", "-t", str(timeout), interface], timeout=timeout + 5)
+            #
+            # "-A"/"--noarp": ohne das prueft dhcpcd die angebotene Adresse
+            # erst per ARP auf Doppelvergabe (RFC 5227) und meldet sich
+            # erst danach zurueck - mehrere Sekunden, die komplett in
+            # dhcp_seconds landen (Pi 5 mit dhcpcd: ~6 s, dhclient-Geraete
+            # im selben Netz: ~1 s).
+            # "-4": nur IPv4, ausgewertet wird ohnehin nur die IPv4-Adresse.
+            # Achtung: eine "-4"-Instanz hat einen eigenen Steuer-Socket,
+            # daher in _cleanup_connection() auch "-k" mit "-4".
+            _run(["dhcpcd", "-4", "-A", "-L", "-t", str(timeout), interface], timeout=timeout + 5)
     except (WifiOpsError, subprocess.TimeoutExpired):
         return None
 
@@ -1582,10 +1823,10 @@ def _iperf3_measure(
     reverse: bool = False,
     port: int = 5201,
     bitrate_mbps: float = 0,
-) -> tuple[float | None, int | None, str | None]:
+) -> tuple[float | None, int | None, str | None, dict | None]:
     """
     Ein iperf3-Lauf, Rückgabe (Mbit/s, TCP-Retransmits des Senders,
-    Fehlertext). reverse=True misst den Download (Server sendet, -R), sonst
+    Fehlertext, Fehlercode). reverse=True misst den Download (Server sendet, -R), sonst
     den Upload; die Retransmits gehoeren jeweils zur sendenden Seite.
     bitrate_mbps > 0 begrenzt die Senderate (-b), sonst sendet iperf3 so
     schnell es geht und lastet den Kanal fuer die Testdauer voll aus.
@@ -1624,35 +1865,40 @@ def _iperf3_measure(
         try:
             res = _run(cmd, timeout=duration + 15, check=False)
         except subprocess.TimeoutExpired:
-            return None, None, "iperf3 Timeout"
+            return None, None, "iperf3 Timeout", _err("iperf3_timeout")
         log.debug(
             "%s (rc=%d):\n%s", " ".join(cmd), res.returncode, res.stdout.strip()
         )
         try:
             data = json.loads(res.stdout)
         except ValueError:
-            msg = res.stderr.strip() or res.stdout.strip() or "keine Ausgabe"
-            return None, None, msg[:200]
+            msg = (res.stderr.strip() or res.stdout.strip())[:200]
+            if not msg:
+                return None, None, "keine Ausgabe", _err("iperf3_no_output")
+            return None, None, msg, _err("iperf3_failed", detail=msg)
         error = data.get("error")
         if error is None:
             end = data.get("end") or {}
             summary = end.get("sum_received") or end.get("sum_sent") or {}
             bps = summary.get("bits_per_second")
             if bps is None:
-                return None, None, "iperf3-Ausgabe ohne Ergebnis"
+                return None, None, "iperf3-Ausgabe ohne Ergebnis", _err("iperf3_no_result")
             retransmits = (end.get("sum_sent") or {}).get("retransmits")
-            return round(float(bps) / 1_000_000, 2), retransmits, None
+            return round(float(bps) / 1_000_000, 2), retransmits, None, None
         if "busy" not in error.lower():
             break
         if attempt == attempts:
-            error = f"{error} ({attempts} Versuche im Abstand von {busy_wait} s)"
-            break
+            # Fehlertext von iperf3 selbst (englisch) bleibt, die Versuche
+            # stehen im deutschen Text bzw. als Parameter im Code.
+            return (None, None,
+                    f"{error} ({attempts} Versuche im Abstand von {busy_wait} s)"[:200],
+                    _err("iperf3_failed", detail=str(error)[:200], attempts=attempts, wait_s=busy_wait))
         log.info(
             "iperf3-Server %s:%d belegt (Versuch %d/%d), neuer Versuch in %d s",
             server, port, attempt, attempts, busy_wait,
         )
         time.sleep(busy_wait)
-    return None, None, str(error)[:200]
+    return None, None, str(error)[:200], _err("iperf3_failed", detail=str(error)[:200])
 
 
 def _iperf3(
@@ -1666,7 +1912,7 @@ def _iperf3(
 ) -> tuple[float | None, int | None]:
     """Durchsatz über das WLAN-Interface (Connection-Test): (Mbit/s,
     Retransmits). reverse=True misst den Download."""
-    mbps, retransmits, error = _iperf3_measure(
+    mbps, retransmits, error, _code = _iperf3_measure(
         server, duration, bind_ip, bind_dev=interface, reverse=reverse, port=port,
         bitrate_mbps=bitrate_mbps,
     )
@@ -1697,6 +1943,8 @@ class LanIperfResult:
     # (Pakete/Bytes/Fehler/Drops), siehe _read_counters().
     counters: dict | None = None
     error: str | None = None
+    # Strukturierte Fassung von "error" fuer das Dashboard (siehe _err()).
+    error_codes: list[dict] | None = None
 
 
 def run_lan_iperf3(
@@ -1709,31 +1957,35 @@ def run_lan_iperf3(
     result = LanIperfResult(interface=interface, server=server)
     if not shutil.which("iperf3"):
         result.error = "iperf3 nicht installiert"
+        result.error_codes = [_err("iperf3_missing")]
         return result
 
     result.ip_address = interface_ipv4(interface)
     if not result.ip_address:
         result.error = f"Interface {interface} hat keine IPv4-Adresse"
+        result.error_codes = [_err("no_ipv4", interface=interface)]
         return result
 
     counters_before = _read_counters(interface)
     try:
-        (result.upload_mbps, result.upload_retransmits, up_err) = _iperf3_measure(
+        (result.upload_mbps, result.upload_retransmits, up_err, up_code) = _iperf3_measure(
             server, duration, result.ip_address, bind_dev=interface, port=port
         )
         if up_err:
             # Server nicht erreichbar/beschaeftigt: Download waere dasselbe
             # Problem, spart die Wartezeit eines zweiten Fehlversuchs.
             result.error = f"Upload: {up_err}"
+            result.error_codes = [_err("lan_upload_failed")] + ([up_code] if up_code else [])
             return result
 
         time.sleep(1)
-        (result.download_mbps, result.download_retransmits, down_err) = _iperf3_measure(
+        (result.download_mbps, result.download_retransmits, down_err, down_code) = _iperf3_measure(
             server, duration, result.ip_address, bind_dev=interface,
             reverse=True, port=port,
         )
         if down_err:
             result.error = f"Download: {down_err}"
+            result.error_codes = [_err("lan_download_failed")] + ([down_code] if down_code else [])
         return result
     finally:
         result.counters = _counter_delta(counters_before, _read_counters(interface))
@@ -1810,7 +2062,9 @@ def _cleanup_connection(
             check=False, timeout=10,
         )
     else:
-        _run(["dhcpcd", "-k", interface], check=False, timeout=10)
+        # "-4" wie beim Start in _run_dhcp() - sonst sucht dhcpcd den
+        # Steuer-Socket der Instanz unter falschem Namen und gibt nichts frei.
+        _run(["dhcpcd", "-4", "-k", interface], check=False, timeout=10)
     _run(["ip", "addr", "flush", "dev", interface], check=False)
     _run(["ip", "link", "set", interface, "down"], check=False)
     if restore_mac:
@@ -1826,3 +2080,205 @@ def _cleanup_connection(
     # vollständig freigibt, bevor der wifi_lock wieder freigegeben wird
     # und z.B. der Scan-Loop sofort einen neuen Scan versucht.
     time.sleep(1.0)
+
+# ---------------------------------------------------------------------
+# Mitschnitt fehlgeschlagener Connection-Tests
+# ---------------------------------------------------------------------
+# Bewusst hier statt in einem eigenen Modul: das Auto-Update kopiert nur
+# Dateien aus seiner FILES-Liste (update_probe.py), und auf den Geraeten
+# laeuft beim ersten Update noch die alte Liste - ein neues Modul fehlte
+# dann, und main.py liesse sich nicht mehr importieren.
+#
+# Mitschnitt fehlgeschlagener Connection-Tests.
+#
+# Waehrend jedes Tests laufen zwei Aufzeichnungen mit:
+#   - tcpdump auf dem Test-Interface (pcap): EAPOL (802.1X, 4-Way-Handshake),
+#     DHCP, ARP, DNS, ICMP. Der Adapter laeuft im Client-Modus ("managed") -
+#     die 802.11-Verwaltungsrahmen der Assoziation selbst (Authentication,
+#     Association, Deauth) sind darin NICHT enthalten, dafuer braeuchte es
+#     einen zweiten Adapter im Monitor-Modus.
+#   - "iw event -t" (Text): die Kernel-Ereignisse genau dieser Rahmen -
+#     authenticate/associate/connect/deauth/disconnect mit Status- bzw.
+#     Reason-Code. Ergaenzt das pcap um den Teil, den tcpdump nicht sieht.
+#
+# Gelingt der Test, wird beides verworfen. Scheitert er, landen pcap und
+# Ereignisse unter einer zufaelligen capture_id im Spool-Verzeichnis; der
+# Sender laedt sie ans Dashboard hoch (sender.py) und loescht sie danach.
+# Die capture_id steht im Testergebnis, so ordnet das Dashboard den
+# Mitschnitt der Testzeile zu.
+#
+# Fehlen tcpdump oder iw, laeuft der Test ohne die jeweilige Aufzeichnung -
+# ein Mitschnitt darf einen Test nie stoeren.
+CAPTURE_SPOOL_DIR = Path("/var/lib/wlanmon-probe/captures")
+# Unter dem PHP-Standard upload_max_filesize (2 MB) bleiben.
+CAPTURE_MAX_PCAP_BYTES = 1_500_000
+CAPTURE_MAX_EVENTS_BYTES = 64_000
+# wpa_supplicant-Log (ohne -d: Zustaende, EAP-Methode, Zertifikat, Fehler -
+# keine Passwoerter/PSKs); vom Ende her gekuerzt.
+CAPTURE_MAX_WPA_LOG_BYTES = 128_000
+# Haelt das Spool-Verzeichnis klein, falls der Server laenger nichts annimmt.
+CAPTURE_MAX_SPOOL_BYTES = 20_000_000
+# Nur der Verkehr, der beim Verbindungsaufbau interessiert - kein iperf3.
+CAPTURE_PCAP_FILTER = "ether proto 0x888e or arp or udp port 67 or udp port 68 or port 53 or icmp or icmp6"
+
+_capture_warned_missing: set[str] = set()
+
+
+def _capture_which(tool: str) -> str | None:
+    path = shutil.which(tool)
+    if path is None and tool not in _capture_warned_missing:
+        _capture_warned_missing.add(tool)
+        log.warning("%s nicht installiert - Mitschnitt fehlgeschlagener Tests ohne %s", tool, tool)
+    return path
+
+
+class FailureCapture:
+    """start() vor dem Verbindungsaufbau, finish(keep) am Ende des Tests."""
+
+    def __init__(self, interface: str, spool_dir: Path = CAPTURE_SPOOL_DIR):
+        self._interface = interface
+        self._spool = spool_dir
+        self._workdir: Path | None = None
+        self._tcpdump: subprocess.Popen | None = None
+        self._events: subprocess.Popen | None = None
+        self._events_file = None
+        self._wpa_log_path: str | None = None
+
+    def start(self) -> None:
+        try:
+            self._workdir = Path(tempfile.mkdtemp(prefix="wlanmon-probe-capture-"))
+            tcpdump = _capture_which("tcpdump")
+            if tcpdump:
+                # -U: jedes Paket sofort schreiben (nichts geht beim Stoppen
+                # verloren), -c: harte Obergrenze, falls der Filter doch viel
+                # Verkehr durchlaesst. -n: keine DNS-Aufloesung durch tcpdump.
+                self._tcpdump = subprocess.Popen(
+                    [tcpdump, "-i", self._interface, "-n", "-U", "-c", "5000",
+                     "-w", str(self._workdir / "capture.pcap"), CAPTURE_PCAP_FILTER],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            iw = _capture_which("iw")
+            if iw:
+                self._events_file = open(self._workdir / "events.txt", "w", encoding="utf-8")
+                self._events = subprocess.Popen(
+                    [iw, "event", "-t"], stdout=self._events_file, stderr=subprocess.DEVNULL,
+                )
+        except Exception:  # noqa: BLE001 - Mitschnitt darf den Test nie kippen
+            log.warning("Mitschnitt konnte nicht gestartet werden", exc_info=True)
+            self._stop_processes()
+
+    def _stop_processes(self) -> None:
+        for proc in (self._tcpdump, self._events):
+            if proc is None or proc.poll() is not None:
+                continue
+            try:
+                proc.send_signal(signal.SIGINT)  # tcpdump schreibt dann sauber zu Ende
+                proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001
+                proc.kill()
+        if self._events_file is not None:
+            self._events_file.close()
+            self._events_file = None
+        self._tcpdump = self._events = None
+
+    def finish(self, keep: bool, wpa_log_path: str | None = None) -> str | None:
+        """Stoppt die Aufzeichnung. keep=True: ins Spool-Verzeichnis
+        uebernehmen und die capture_id zurueckgeben, sonst verwerfen.
+        wpa_log_path: Log von wpa_supplicant - wird mit abgelegt, muss dafuer
+        vollstaendig sein (wpa_supplicant beendet, die Ausgabe ist gepuffert)."""
+        self._wpa_log_path = wpa_log_path
+        if self._workdir is None:
+            return None
+        self._stop_processes()
+        try:
+            if not keep:
+                return None
+            return self._store()
+        except Exception:  # noqa: BLE001
+            log.warning("Mitschnitt konnte nicht gespeichert werden", exc_info=True)
+            return None
+        finally:
+            shutil.rmtree(self._workdir, ignore_errors=True)
+            self._workdir = None
+
+    def _store(self) -> str | None:
+        pcap = self._workdir / "capture.pcap"
+        events = self._workdir / "events.txt"
+        events_text = ""
+        if events.exists():
+            # iw event zeigt alle Interfaces - nur die Zeilen des Test-Interfaces.
+            lines = [line for line in events.read_text(encoding="utf-8", errors="replace").splitlines()
+                     if f" {self._interface} " in f" {line} " or f"{self._interface}:" in line]
+            events_text = "\n".join(lines)[-CAPTURE_MAX_EVENTS_BYTES:]
+        has_pcap = pcap.exists() and pcap.stat().st_size > 24  # 24 Byte = nur pcap-Header
+        if pcap.exists() and not has_pcap:
+            # tcpdump lief, sah aber kein passendes Paket - z.B. weil
+            # wpa_supplicant EAPOL ueber den nl80211-Control-Port schickt und
+            # die Rahmen dann nicht ueber das Interface laufen.
+            log.info("Mitschnitt: pcap leer (kein EAPOL/DHCP/ARP/DNS/ICMP auf %s gesehen)", self._interface)
+        wpa_text = ""
+        if self._wpa_log_path:
+            try:
+                wpa_text = Path(self._wpa_log_path).read_text(encoding="utf-8", errors="replace")
+                wpa_text = wpa_text[-CAPTURE_MAX_WPA_LOG_BYTES:]
+            except OSError:
+                pass
+        if not has_pcap and not events_text and not wpa_text:
+            return None
+        if has_pcap and pcap.stat().st_size > CAPTURE_MAX_PCAP_BYTES:
+            log.warning("Mitschnitt mit %d Byte zu gross, nur Ereignisse werden behalten", pcap.stat().st_size)
+            has_pcap = False
+
+        capture_id = uuid.uuid4().hex
+        self._spool.mkdir(parents=True, exist_ok=True)
+        os.chmod(self._spool, 0o700)  # enthaelt MACs und 802.1X-Identitaeten
+        if has_pcap:
+            shutil.move(str(pcap), self._spool / f"{capture_id}.pcap")
+        if wpa_text:
+            (self._spool / f"{capture_id}.wpa.txt").write_text(wpa_text, encoding="utf-8")
+        # events.txt zuletzt: daran erkennt capture_pending() einen vollstaendigen Mitschnitt.
+        (self._spool / f"{capture_id}.events.txt").write_text(events_text, encoding="utf-8")
+        capture_prune_spool(self._spool)
+        log.info("Mitschnitt des fehlgeschlagenen Tests gespeichert (capture_id %s)", capture_id)
+        return capture_id
+
+
+def capture_pending(spool_dir: Path = CAPTURE_SPOOL_DIR) -> list[str]:
+    """capture_ids im Spool-Verzeichnis, aelteste zuerst."""
+    if not spool_dir.is_dir():
+        return []
+    files = sorted(spool_dir.glob("*.events.txt"), key=lambda p: p.stat().st_mtime)
+    return [p.name[: -len(".events.txt")] for p in files]
+
+
+def capture_files(
+    capture_id: str, spool_dir: Path = CAPTURE_SPOOL_DIR
+) -> tuple[Path | None, Path, Path | None]:
+    """(pcap, events, wpa_log) eines Mitschnitts; pcap/wpa_log None, wenn nicht vorhanden."""
+    pcap = spool_dir / f"{capture_id}.pcap"
+    wpa = spool_dir / f"{capture_id}.wpa.txt"
+    return (
+        pcap if pcap.exists() else None,
+        spool_dir / f"{capture_id}.events.txt",
+        wpa if wpa.exists() else None,
+    )
+
+
+def capture_remove(capture_id: str, spool_dir: Path = CAPTURE_SPOOL_DIR) -> None:
+    for path in capture_files(capture_id, spool_dir):
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+
+def capture_prune_spool(spool_dir: Path = CAPTURE_SPOOL_DIR, max_bytes: int = CAPTURE_MAX_SPOOL_BYTES) -> None:
+    """Aelteste Mitschnitte verwerfen, solange das Verzeichnis zu gross ist."""
+    ids = capture_pending(spool_dir)
+    sizes = {cid: sum(p.stat().st_size for p in capture_files(cid, spool_dir) if p is not None and p.exists())
+             for cid in ids}
+    total = sum(sizes.values())
+    for cid in ids:
+        if total <= max_bytes:
+            break
+        log.warning("Spool fuer Mitschnitte voll - verwerfe aeltesten (%s)", cid)
+        capture_remove(cid, spool_dir)
+        total -= sizes[cid]

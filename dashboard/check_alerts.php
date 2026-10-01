@@ -10,6 +10,8 @@ declare(strict_types=1);
  *     (bzw. noch nie gemeldet, dann gegen created_at statt last_seen_at).
  *   - "ssid_failing:<SSID>": die letzten consecutive_test_failures
  *     Connection-Tests dieser SSID waren allesamt nicht verbunden.
+ *   - "auth_slow:<SSID>": die letzten consecutive_test_failures Tests mit
+ *     802.1X-Zeit lagen alle ueber auth_slow_seconds (nur wenn gesetzt).
  * Bei einer NEUEN Stoerung wird sofort benachrichtigt (sofern gerade im
  * erlaubten Zeitfenster der Site); bleibt sie bestehen, erst wieder nach
  * repeat_after_minutes (kein Spam bei jedem Cron-Tick); klaert sie sich,
@@ -39,6 +41,7 @@ require_once __DIR__ . '/src/Measurement.php';
 require_once __DIR__ . '/src/Alerting.php';
 require_once __DIR__ . '/src/Site.php';
 require_once __DIR__ . '/src/I18n.php';
+require_once __DIR__ . '/src/ProbeError.php';
 
 function log_line(string $msg): void
 {
@@ -151,16 +154,30 @@ foreach (device_list() as $device) {
     // Die letzten $consecutiveFailures Connection-Tests je SSID sammeln.
     // Lookback grosszuegig (300), damit bei mehreren Ziel-SSIDs pro Geraet
     // genug Historie je SSID zusammenkommt.
+    // Nebenbei je SSID: Fehlertext des neuesten Tests (fuer die Meldung) und
+    // die letzten $consecutiveFailures 802.1X-Dauern (Regel "auth_slow").
     $bySsid = [];
+    $lastError = [];
+    $authBySsid = [];
     foreach (measurement_list($deviceId, 'connection_test', 300) as $t) {
         $data = json_decode((string) $t['data'], true) ?: [];
         $ssid = $data['ssid'] ?? null;
         if ($ssid === null) {
             continue;
         }
-        $bySsid[$ssid] ??= [];
+        if (!isset($bySsid[$ssid])) {
+            $bySsid[$ssid] = [];
+            // Aus den Fehlercodes in der Alarmsprache des Standorts (Override oben).
+            $lastError[$ssid] = trim(probe_error_text($data));
+        }
         if (count($bySsid[$ssid]) < $consecutiveFailures) {
             $bySsid[$ssid][] = !empty($data['connected']);
+        }
+        if (isset($data['auth_seconds'])) {
+            $authBySsid[$ssid] ??= [];
+            if (count($authBySsid[$ssid]) < $consecutiveFailures) {
+                $authBySsid[$ssid][] = (float) $data['auth_seconds'];
+            }
         }
     }
 
@@ -183,12 +200,63 @@ foreach (device_list() as $device) {
         if ($newestOk !== true && !$allFailing) {
             continue;
         }
+        $message = __('Gerät %s (Standort: %s): SSID „%s“ ist bei den letzten %d Connection-Tests in Folge fehlgeschlagen.', $deviceId, $site, (string) $ssid, $consecutiveFailures);
+        // Fehlertext des Probes (z.B. "keine Antwort vom RADIUS-Server")
+        // gleich mitschicken - spart den Blick ins Dashboard.
+        if ($allFailing && $lastError[$ssid] !== '') {
+            $error = $lastError[$ssid];
+            // Zeichen- statt Byte-genau kuerzen (ohne mbstring, s.o.).
+            if (preg_match('/^.{300}/su', $error, $m) && strlen($m[0]) < strlen($error)) {
+                $error = $m[0] . '…';
+            }
+            $message .= "\n" . __('Letzter Fehler: %s', $error);
+        }
         handle_condition(
             $deviceId,
             'ssid_failing:' . $ssid,
             $allFailing,
             __('WLANMON: %s – SSID „%s“ fällt aus', $deviceId, (string) $ssid),
-            __('Gerät %s (Standort: %s): SSID „%s“ ist bei den letzten %d Connection-Tests in Folge fehlgeschlagen.', $deviceId, $site, (string) $ssid, $consecutiveFailures),
+            $message,
+            $repeatAfterSeconds,
+            $siteChannels,
+            $notifyAllowed
+        );
+    }
+
+    // --- Regel "auth_slow:<SSID>" ---
+    // 802.1X-Anmeldung (EAP + 4-Way-Handshake, auth_seconds der Probe) bei
+    // den letzten $consecutiveFailures Tests mit 802.1X-Zeit JEDES MAL
+    // langsamer als die Schwelle. "Jedes Mal" statt Durchschnitt, damit ein
+    // einzelner Ausreisser keinen Alarm ausloest. Entwarnung wie bei
+    // ssid_failing, sobald der neueste Wert wieder darunter liegt;
+    // dazwischen (gemischt) Zustand unveraendert lassen.
+    $authSlowSeconds = isset($siteAlerting['auth_slow_seconds']) ? (float) $siteAlerting['auth_slow_seconds'] : 0.0;
+    foreach ($authBySsid as $ssid => $values) {
+        $rule = 'auth_slow:' . $ssid;
+        if ($authSlowSeconds <= 0) {
+            // Regel abgeschaltet: einen noch offenen Alarm still schliessen,
+            // statt ihn ewig offen zu halten oder eine Entwarnung zu senden.
+            $open = alert_find_active($deviceId, $rule);
+            if ($open !== null) {
+                alert_resolve((int) $open['id']);
+            }
+            continue;
+        }
+        $newestFast = $values[0] <= $authSlowSeconds;
+        $allSlow = count($values) >= $consecutiveFailures
+            && min($values) > $authSlowSeconds;
+        if (!$newestFast && !$allSlow) {
+            continue;
+        }
+        handle_condition(
+            $deviceId,
+            $rule,
+            $allSlow,
+            __('WLANMON: %s – 802.1X an „%s“ langsam', $deviceId, (string) $ssid),
+            __('Gerät %s (Standort: %s): Die 802.1X-Anmeldung an SSID „%s“ dauerte bei den letzten %d Tests jeweils länger als %s s (zuletzt %s s, Ø %s s). RADIUS-Server langsam oder schlecht erreichbar?',
+                $deviceId, $site, (string) $ssid, count($values),
+                number_format($authSlowSeconds, 1), number_format($values[0], 1),
+                number_format(array_sum($values) / count($values), 1)),
             $repeatAfterSeconds,
             $siteChannels,
             $notifyAllowed

@@ -191,6 +191,15 @@ set the password – using the same SMTP credentials as alerting
 (`/settings/alerting`). If sending fails or SMTP is not configured, the link
 is also shown directly in the web UI for manual copying.
 
+**Deactivating users (`/users`, admin only):** "Deactivate" locks an account
+without deleting it – role, sites and password are kept. A deactivated user can
+no longer log in, a running session ends with the next request, and open
+invitation links stop working. "Reactivate" restores access with one click.
+Your own account cannot be deactivated, so there is always an admin left who
+can undo it. Both actions are recorded in the change log. The status column
+shows *active* (password set), *invited* (invitation not yet accepted) or
+*deactivated*.
+
 **Changing your own password:** via the key icon link in the header
 (`/account/password`, all roles).
 
@@ -198,7 +207,10 @@ is also shown directly in the web UI for manual copying.
 login page at the top right. The choice is stored in the user account
 (`users.language`; on older installations the dashboard creates the column
 itself on the first switch) and additionally in a cookie; without a choice
-the browser language applies. The entire web UI is translated. The language
+the browser language applies. The entire web UI is translated, including the
+error messages of failed tests: probes from 1.0.1.40 on send structured error
+codes (`error_codes`), which `src/ProbeError.php` turns into text in the UI or
+alert language; older measurements show the probe's German text. The language
 of alert messages (e-mail/Telegram) is chosen per site under
 `/sites/<id>/alerting` (`site_alerting.language`, column created when
 needed); invitation e-mails go out in the language of the inviting admin.
@@ -472,7 +484,7 @@ including all items/triggers, per device registered in wlanmon.
 
 Complements the Zabbix integration above with native push alerting straight
 from wlanmon: `check_alerts.php` periodically (cron job, no web server
-trigger) checks every device against two rules and notifies via e-mail
+trigger) checks every device against these rules and notifies via e-mail
 and/or Telegram when needed:
 
 - **`offline`**: not reported for longer than `offline_after_minutes` (or
@@ -481,7 +493,15 @@ and/or Telegram when needed:
 - **`ssid_failing:<SSID>`**: the last `consecutive_test_failures`
   connection tests of this SSID were *all* unable to connect. Skipped while
   the device itself counts as offline (those would only be stale
-  measurements).
+  measurements). The message includes the probe's error text of the latest
+  test (e.g. "no response from the RADIUS server").
+- **`auth_slow:<SSID>`** (optional, only when "802.1X counts as slow from"
+  is set for the site): the 802.1X login (EAP + 4-way handshake,
+  `auth_seconds`) took longer than `auth_slow_seconds` in *each* of the last
+  `consecutive_test_failures` tests that have an 802.1X time. "Each" rather
+  than the average, so a single outlier does not trigger it. Useful for a
+  slow or poorly reachable RADIUS server, e.g. a cloud RADIUS. All-clear as
+  soon as the latest value is below the threshold again.
 
 A **new** problem is notified immediately (if currently within the allowed
 time window, see below). If it persists, the next notification only comes
@@ -697,6 +717,27 @@ Restoring:
 ```bash
 gunzip < /var/backups/wlanmon/wlanmon-2026-09-30_0215.sql.gz | mysql -u wlanmon -p wlanmon
 ```
+
+## Captures of failed tests
+
+When a connection test fails, probes from 1.0.1.35 on upload a capture of the
+failed connection attempt: a pcap (EAPOL, DHCP, ARP, DNS, ICMP) and the Wi-Fi
+adapter's kernel events (authentication, association, deauth with status/reason
+codes), and from probe 1.0.1.38 on the wpa_supplicant log. Details on what is
+and is not included: probe README, "Capturing failed tests".
+
+- **Download:** links "pcap", "Events" and "wpa_supplicant" in the error column of the test table
+  on the device page – for admins and users with access to the device, not for
+  viewers. The pcap opens in Wireshark.
+- **Switch off** per device: device configuration → "Capture failed tests".
+- **Storage:** table `captures` in the database (created automatically on the
+  first capture), so database backups include them. Retention: user menu →
+  "Data retention" → captures, default **30 days**. Deleting a device deletes
+  its captures.
+- **Limits:** up to 2 MB pcap, 256 KB events and 256 KB wpa_supplicant log per capture. PHP's default
+  `upload_max_filesize` (2 MB) is enough; lower values reject captures with
+  HTTP 413 and the probe drops them.
+- **Privacy:** captures contain MAC addresses and possibly 802.1X identities.
 
 ## Encrypting credentials
 

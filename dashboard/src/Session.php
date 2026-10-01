@@ -63,7 +63,39 @@ function require_csrf(): void
     }
 }
 
-/** @return array<string, mixed>|null Eingeloggter User (ohne password_hash) oder null. */
+/**
+ * Stellt die Spalte users.disabled_at bereit (Konto deaktiviert, siehe
+ * user_set_disabled() in src/User.php). Bestehende klassische Installationen
+ * bekommen sie beim ersten Aufruf automatisch - wie users.language in
+ * src/I18n.php; im Docker-Betrieb legt docker/init_db.php sie an. Fehlen die
+ * Rechte fuer ALTER TABLE, ist Deaktivieren einfach nicht verfuegbar (false),
+ * statt dass Login und jede Seite an der fehlenden Spalte scheitern.
+ */
+function users_disabled_supported(): bool
+{
+    static $supported = null;
+    if ($supported !== null) {
+        return $supported;
+    }
+    try {
+        db()->query('SELECT disabled_at FROM users LIMIT 0');
+        return $supported = true;
+    } catch (PDOException $e) {
+        try {
+            db()->exec('ALTER TABLE users ADD COLUMN disabled_at DATETIME NULL');
+            return $supported = true;
+        } catch (PDOException $e2) {
+            error_log('users.disabled_at nicht verfügbar (' . $e2->getMessage() . ') - Deaktivieren von Benutzern ausgeschaltet');
+            return $supported = false;
+        }
+    }
+}
+
+/**
+ * @return array<string, mixed>|null Eingeloggter User (ohne password_hash) oder null.
+ * Ein deaktiviertes Konto zaehlt als nicht eingeloggt - eine laufende Sitzung
+ * endet damit bei der naechsten Anfrage.
+ */
 function current_user(): ?array
 {
     static $cached = false;
@@ -77,7 +109,8 @@ function current_user(): ?array
     if (!is_int($userId)) {
         return null;
     }
-    $stmt = db()->prepare('SELECT id, username, role, created_at FROM users WHERE id = ?');
+    $stmt = db()->prepare('SELECT id, username, role, created_at FROM users WHERE id = ?'
+        . (users_disabled_supported() ? ' AND disabled_at IS NULL' : ''));
     $stmt->execute([$userId]);
     $row = $stmt->fetch();
     $user = $row ?: null;
@@ -90,9 +123,12 @@ function current_user(): ?array
  */
 function login(string $username, string $password): bool
 {
-    $stmt = db()->prepare('SELECT id, password_hash FROM users WHERE username = ?');
+    $stmt = db()->prepare('SELECT id, password_hash FROM users WHERE username = ?'
+        . (users_disabled_supported() ? ' AND disabled_at IS NULL' : ''));
     $stmt->execute([$username]);
     $row = $stmt->fetch();
+    // Deaktiviert wie unbekannt behandeln: dieselbe Fehlermeldung wie bei
+    // falschem Passwort, damit der Login nicht verraet, welche Konten existieren.
     if ($row === false || $row['password_hash'] === null) {
         return false;
     }

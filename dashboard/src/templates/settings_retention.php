@@ -1,5 +1,5 @@
 <?php
-/** @var array{scan_days: int, test_days: int} $retention */
+/** @var array{scan_days: int, test_days: int, capture_days: int} $retention */
 /** @var array{kinds: array, size_bytes: ?int} $overview */
 /** @var array|null $lastCleanup */
 /** @var array|null $lastBackup */
@@ -67,6 +67,11 @@ $backupOk = !empty($lastBackup['ok']) && $backupAgeHours !== null && $backupAgeH
             <input type="number" min="0" max="<?= RETENTION_MAX_DAYS ?>" name="test_days" value="<?= (int) $retention['test_days'] ?>">
             <span class="muted"><?= te('Die eigentliche Qualitätshistorie, braucht wenig Platz. Gilt auch für behobene Alarme. Standard: 365 Tage.') ?></span>
         </label>
+        <label>
+            <?= te('Mitschnitte fehlgeschlagener Tests aufbewahren (Tage)') ?>
+            <input type="number" min="0" max="<?= RETENTION_MAX_DAYS ?>" name="capture_days" value="<?= (int) $retention['capture_days'] ?>">
+            <span class="muted"><?= te('pcap und Adapter-Ereignisse zu fehlgeschlagenen Connection-Tests. Enthalten MAC-Adressen und ggf. 802.1X-Identitäten. Standard: 30 Tage.') ?></span>
+        </label>
         <p class="muted"><?= te('0 = unbegrenzt aufbewahren.') ?></p>
     </fieldset>
     <button type="submit"><i class="fa-solid fa-floppy-disk"></i> <?= te('Speichern') ?></button>
@@ -104,6 +109,7 @@ $backupOk = !empty($lastBackup['ok']) && $backupAgeHours !== null && $backupAgeH
             'alerts' => __('behobene Alarme'),
             'invites' => __('abgelaufene Einladungen'),
             'audit' => __('Protokolleinträge'),
+            'captures' => __('Mitschnitte'),
         ];
         $deletedParts = [];
         foreach ((array) ($lastCleanup['deleted'] ?? []) as $kind => $count) {

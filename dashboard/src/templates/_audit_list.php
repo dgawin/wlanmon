@@ -17,6 +17,8 @@ $auditActionLabels = [
     'notes' => __('Bemerkung geändert'),
     'alerting' => __('Alarmierung geändert'),
     'encrypted' => __('Zugangsdaten verschlüsselt'),
+    'disabled' => __('deaktiviert'),
+    'enabled' => __('reaktiviert'),
 ];
 $auditSecretLabels = [
     'set' => __('gesetzt'),
@@ -31,7 +33,7 @@ $auditObjectLink = static function (array $row): string {
         case 'site':
             return '<a href="/sites/' . (int) $id . '/alerting"><i class="fa-solid fa-building"></i> ' . te('Standort') . ' #' . (int) $id . '</a>';
         case 'user':
-            return '<a href="/users/' . (int) $id . '/edit"><i class="fa-solid fa-user"></i> ' . te('Benutzer') . ' #' . (int) $id . '</a>';
+            return '<a href="/users/' . (int) $id . '/edit"><i class="fa-solid fa-user"></i> ' . te('Benutzer #%d', (int) $id) . '</a>';
         case 'settings':
             $labels = ['alerting' => ['/settings/alerting', __('Zugangsdaten für die Alarmierung')], 'retention' => ['/settings/retention', __('Datenhaltung')]];
             [$href, $label] = $labels[$id] ?? ['#', $id];
@@ -51,7 +53,7 @@ $auditObjectLink = static function (array $row): string {
     <thead>
         <tr>
             <th><?= te('Zeitpunkt') ?></th>
-            <th><?= te('Benutzer') ?></th>
+            <th><?= te('Geändert von') ?></th>
             <?php if (!empty($auditShowObject)): ?><th><?= te('Objekt') ?></th><?php endif; ?>
             <th><?= te('Aktion') ?></th>
             <th><?= te('Änderungen') ?></th>

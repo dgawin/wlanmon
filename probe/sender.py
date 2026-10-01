@@ -16,6 +16,7 @@ import requests
 
 from probe_status import ProbeStatus
 from queue_store import QueueStore
+from wifi_ops import capture_files, capture_pending, capture_remove
 
 log = logging.getLogger("wlanmon_probe.sender")
 
@@ -39,6 +40,9 @@ class Sender(threading.Thread):
         super().__init__(name="sender", daemon=True)
         self._store = store
         self._url = server_url.rstrip("/") + "/measurements"
+        self._captures_url = f"{server_url.rstrip('/')}/devices/{device_id}/captures/"
+        self._api_key = api_key
+        self._captures_unsupported_logged = False
         self._headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -61,6 +65,9 @@ class Sender(threading.Thread):
         max_backoff = 120
         while not self._stop_event.is_set():
             sent_any = self._flush_once()
+            # Erst die Messwerte (mit capture_id), dann die Mitschnitte dazu.
+            if not self._store.fetch_unsent(1):
+                self._upload_captures()
             if sent_any:
                 backoff = 1
                 wait = self._flush_interval
@@ -116,3 +123,49 @@ class Sender(threading.Thread):
         if self._status is not None:
             self._status.update_sender_error(f"HTTP {resp.status_code}")
         return False
+
+    def _upload_captures(self) -> None:
+        """Mitschnitte fehlgeschlagener Tests (FailureCapture in wifi_ops.py) hochladen, aelteste
+        zuerst; geloescht wird erst nach einer 2xx-Antwort. Bei einem Fehler
+        abbrechen und im naechsten Zyklus erneut versuchen."""
+        for capture_id in capture_pending()[:5]:
+            pcap, events, wpa_log = capture_files(capture_id)
+            files = {"events": ("events.txt", events.read_bytes() if events.exists() else b"", "text/plain")}
+            if wpa_log is not None:
+                files["wpa_log"] = ("wpa_supplicant.txt", wpa_log.read_bytes(), "text/plain")
+            if pcap is not None:
+                files["pcap"] = (f"{capture_id}.pcap", pcap.read_bytes(), "application/vnd.tcpdump.pcap")
+            try:
+                resp = self._session.post(
+                    self._captures_url + capture_id,
+                    files=files,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    timeout=max(self._timeout, 30),
+                    verify=self._verify_tls,
+                )
+            except requests.RequestException as exc:
+                log.warning("Mitschnitt %s nicht uebertragen (%s), neuer Versuch spaeter", capture_id, exc)
+                return
+            if 200 <= resp.status_code < 300:
+                capture_remove(capture_id)
+                log.info("Mitschnitt %s uebertragen", capture_id)
+            elif resp.status_code == 413:
+                capture_remove(capture_id)
+                log.warning("Mitschnitt %s vom Server als zu gross abgelehnt - verworfen", capture_id)
+            elif resp.status_code in (404, 405):
+                # Dashboard kennt den Endpunkt noch nicht (aelter als 1.0.1.48):
+                # liegen lassen, das Spool-Verzeichnis begrenzt sich selbst.
+                if not self._captures_unsupported_logged:
+                    log.warning("Dashboard nimmt noch keine Mitschnitte an (HTTP %d) - bleiben vorerst liegen",
+                                resp.status_code)
+                    self._captures_unsupported_logged = True
+                return
+            elif resp.status_code == 400:
+                # Inhalt ungueltig - ein neuer Versuch aendert daran nichts, und
+                # liegen gelassen wuerde er alle spaeteren Mitschnitte blockieren.
+                capture_remove(capture_id)
+                log.warning("Mitschnitt %s abgelehnt (HTTP 400: %s) - verworfen", capture_id, resp.text[:200])
+            else:
+                # 401 (API-Key), 5xx usw.: liegen lassen, spaeter erneut versuchen.
+                log.warning("Mitschnitt %s abgelehnt (HTTP %d): %s", capture_id, resp.status_code, resp.text[:200])
+                return

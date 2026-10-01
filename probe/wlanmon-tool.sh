@@ -15,6 +15,7 @@
 #   sudo wlanmon log             follow the probe log
 #   sudo wlanmon update-log      updater log (recent runs)
 #   sudo wlanmon restart         restart the probe service
+#   sudo wlanmon setup           setup wizard (device ID, dashboard, API key ...)
 #   sudo wlanmon update          run an update now
 #   sudo wlanmon help            this help
 #
@@ -347,6 +348,21 @@ menu_wifi() {
     done
 }
 
+# Setup wizard (config_wizard.py in the checkout): asks for device ID,
+# dashboard URL, API key, TLS, Wi-Fi interface etc. and writes config.yaml.
+run_setup_wizard() {
+    local wizard="$REPO_DIR/config_wizard.py"
+    [ -f "$wizard" ] || wizard="$REPO_DIR_SELF/config_wizard.py"
+    if [ ! -f "$wizard" ]; then
+        err "config_wizard.py not found in $REPO_DIR - update the checkout first (sudo wlanmon update)."
+        return 1
+    fi
+    if "$PY" "$wizard" "$CONFIG"; then
+        confirm "Restart the probe service so the new configuration takes effect?" \
+            && systemctl restart "$SVC" && ok "Restarted."
+    fi
+}
+
 menu_config() {
     local c editor cache
     cache="$(cfg remote_config.cache_path /var/lib/wlanmon-probe/remote_config_cache.yaml)"
@@ -355,9 +371,11 @@ menu_config() {
         echo " 1) Show config.yaml (secrets masked)"
         echo " 2) Edit config.yaml"
         echo " 3) Show the central configuration from the dashboard (cache, passwords masked)"
+        echo " 4) Setup wizard (device ID, dashboard, API key, interface ...)"
         echo " 0) back"
         read -r -p "> " c || return
         case "$c" in
+            4) run_setup_wizard; pause ;;
             1) show_masked "$CONFIG"; pause ;;
             2)
                 editor="${EDITOR:-$(command -v nano || command -v vi)}"
@@ -491,6 +509,7 @@ case "${1:-}" in
     log) journalctl -u "$SVC" -f -n 30 ;;
     update-log) journalctl -u "$UPD" -n 80 --no-pager ;;
     restart) systemctl restart "$SVC" && ok "Probe service restarted." ;;
+    setup) run_setup_wizard ;;
     update)
         since="$(date '+%Y-%m-%d %H:%M:%S')"
         systemctl start "$UPD.service"

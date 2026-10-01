@@ -7,6 +7,7 @@ require_once __DIR__ . '/../src/admin_auth.php';
 require_once __DIR__ . '/../src/zabbix_auth.php';
 require_once __DIR__ . '/../src/Response.php';
 require_once __DIR__ . '/../src/Device.php';
+require_once __DIR__ . '/../src/Capture.php';
 require_once __DIR__ . '/../src/Measurement.php';
 require_once __DIR__ . '/../src/Settings.php';
 require_once __DIR__ . '/../src/Alerting.php';
@@ -18,6 +19,7 @@ require_once __DIR__ . '/../src/Timeline.php';
 require_once __DIR__ . '/../src/Retention.php';
 require_once __DIR__ . '/../src/Audit.php';
 require_once __DIR__ . '/../src/I18n.php';
+require_once __DIR__ . '/../src/ProbeError.php';
 
 session_boot();
 
@@ -39,6 +41,12 @@ try {
     // ---- Client-facing: Messwerte empfangen (Gegenstück zu sender.py) ----
     if ($method === 'POST' && $path === '/api/v1/measurements') {
         handle_ingest_measurements();
+        exit;
+    }
+
+    // ---- Client-facing: Mitschnitt eines fehlgeschlagenen Tests (sender.py) ----
+    if ($method === 'POST' && preg_match('#^/api/v1/devices/([^/]+)/captures/([0-9a-f]{32})$#', $path, $m)) {
+        handle_upload_capture(rawurldecode($m[1]), $m[2]);
         exit;
     }
 
@@ -143,6 +151,13 @@ try {
         $device = device_find_or_404($m[1]);
         require_device_access($device);
         render_device_detail($device);
+        exit;
+    }
+    if ($method === 'GET' && preg_match('#^/devices/([^/]+)/captures/([0-9a-f]{32})\.(pcap|txt|log)$#', $path, $m)) {
+        $device = device_find_or_404($m[1]);
+        // Enthaelt MACs und ggf. 802.1X-Identitaeten - nicht fuer Viewer.
+        require_write_access(require_device_access($device));
+        handle_download_capture($device['id'], $m[2], $m[3]);
         exit;
     }
     if ($method === 'GET' && preg_match('#^/devices/([^/]+)/config$#', $path, $m)) {
@@ -290,6 +305,11 @@ try {
         handle_delete_user((int) $m[1]);
         exit;
     }
+    if ($method === 'POST' && preg_match('#^/users/(\d+)/(disable|enable)$#', $path, $m)) {
+        require_role('admin');
+        handle_set_user_disabled((int) $m[1], $m[2] === 'disable');
+        exit;
+    }
     if ($method === 'POST' && preg_match('#^/users/(\d+)/resend-invite$#', $path, $m)) {
         require_role('admin');
         handle_resend_invite((int) $m[1]);
@@ -346,6 +366,77 @@ try {
 // ============================================================
 // Handler-Funktionen
 // ============================================================
+
+/**
+ * Mitschnitt eines fehlgeschlagenen Connection-Tests annehmen (multipart:
+ * "events" Text, "pcap" optional). Authentifiziert wie die Messwerte mit dem
+ * API-Key des Geraets; die capture_id steht schon im Testergebnis.
+ */
+function handle_upload_capture(string $deviceId, string $captureId): void
+{
+    $token = extract_bearer_token();
+    if ($token === null) {
+        json_error(401, "Authorization-Header muss 'Bearer <token>' sein");
+    }
+    $device = device_find($deviceId);
+    if ($device === null || !verify_api_key($token, $device['api_key_hash'])) {
+        json_error(401, 'Unbekanntes Gerät oder ungültiger API-Key');
+    }
+    // Groesser als post_max_size: PHP verwirft den Body still, $_FILES bleibt leer.
+    if ($_FILES === [] && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+        json_error(413, 'Mitschnitt zu groß für die PHP-Einstellungen (post_max_size)');
+    }
+    $read = static function (string $field, int $max): ?string {
+        $file = $_FILES[$field] ?? null;
+        if (!is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            return null;
+        }
+        if (in_array($file['error'], [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true) || (int) $file['size'] > $max) {
+            json_error(413, "$field zu groß");
+        }
+        if ($file['error'] !== UPLOAD_ERR_OK || !is_uploaded_file($file['tmp_name'])) {
+            json_error(400, "$field: Upload fehlgeschlagen");
+        }
+        return (string) file_get_contents($file['tmp_name']);
+    };
+    $events = $read('events', CAPTURE_MAX_EVENTS_BYTES) ?? '';
+    $pcap = $read('pcap', CAPTURE_MAX_PCAP_BYTES);
+    // Log von wpa_supplicant, Probe ab 1.0.1.38 (aeltere schicken es nicht).
+    $wpaLog = $read('wpa_log', CAPTURE_MAX_WPA_LOG_BYTES);
+    if ($pcap !== null && !capture_is_pcap($pcap)) {
+        json_error(400, 'pcap: keine pcap-/pcapng-Datei');
+    }
+    if ($pcap === null && trim($events) === '' && trim((string) $wpaLog) === '') {
+        json_error(400, 'Leerer Mitschnitt');
+    }
+    capture_store($captureId, $deviceId, $pcap, $events, $wpaLog);
+    json_response(['ok' => true], 201);
+}
+
+function handle_download_capture(string $deviceId, string $captureId, string $type): void
+{
+    // pcap = Mitschnitt, txt = iw-Ereignisse, log = wpa_supplicant-Log
+    $columns = ['pcap' => 'pcap', 'txt' => 'events', 'log' => 'wpa_log'];
+    $suffixes = ['pcap' => '.pcap', 'txt' => '-events.txt', 'log' => '-wpa_supplicant.txt'];
+    $capture = capture_find($captureId, $deviceId);
+    $content = $capture === null ? null : ($capture[$columns[$type]] ?? null);
+    if (is_resource($content)) {
+        $content = stream_get_contents($content);
+    }
+    if ($content === null || $content === '') {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '404 - ' . __('Mitschnitt nicht gefunden (evtl. nach Ablauf der Aufbewahrung gelöscht)') . "\n";
+        exit;
+    }
+    $stamp = gmdate('Ymd-His', strtotime((string) $capture['created_at'] . ' UTC') ?: time());
+    $name = 'wlanmon-' . preg_replace('/[^A-Za-z0-9._-]/', '_', $deviceId) . "-$stamp" . $suffixes[$type];
+    header('Content-Type: ' . ($type === 'pcap' ? 'application/vnd.tcpdump.pcap' : 'text/plain; charset=utf-8'));
+    header('Content-Disposition: attachment; filename="' . $name . '"');
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Length: ' . strlen((string) $content));
+    echo $content;
+}
 
 function handle_ingest_measurements(): void
 {
@@ -534,6 +625,8 @@ function handle_set_device_config_via_form(string $deviceId): void
             'iperf3_port' => min(65535, max(1, (int) ($_POST['ct_iperf3_port'] ?? 5201))),
             // iperf3 je SSID höchstens alle N Minuten (0 = bei jedem Test), Probe ab 1.0.1.14.
             'iperf3_min_interval_minutes' => min(10080, max(0, (int) ($_POST['ct_iperf3_min_interval_minutes'] ?? 0))),
+            // Mitschnitt fehlgeschlagener Tests (pcap + iw-Ereignisse), Probe ab 1.0.1.35.
+            'capture_on_failure' => !empty($_POST['ct_capture_on_failure']),
             'iperf3_lan' => [
                 'enabled' => !empty($_POST['lan_enabled']),
                 'server' => trim((string) ($_POST['lan_server'] ?? '')),
@@ -1022,7 +1115,10 @@ function render_dashboard(array $user): void
     $rows = [];
     foreach ($devices as $d) {
         $lastScan = measurement_last($d['id'], 'scan');
-        $lastTest = measurement_last($d['id'], 'connection_test');
+        // Dieselben 100 Tests wie auf der Geräteseite, damit die Kennzahlen
+        // hier und dort übereinstimmen.
+        $tests = measurement_list($d['id'], 'connection_test', 100);
+        $lastTest = $tests[0] ?? null;
         $lastLan = measurement_last($d['id'], 'lan_test');
         $networkCount = null;
         if ($lastScan) {
@@ -1034,6 +1130,7 @@ function render_dashboard(array $user): void
             'last_scan' => $lastScan,
             'last_test' => $lastTest,
             'last_lan' => $lastLan,
+            'test_summary' => connection_test_summary($tests),
             'network_count' => $networkCount,
             'online' => device_is_online($d['last_seen_at'] ?? null),
         ];
@@ -1090,6 +1187,15 @@ function render_device_detail(array $device): void
     $scans = measurement_list($deviceId, 'scan', $scanLimit);
     $tests = measurement_list($deviceId, 'connection_test', 100);
     $lanTests = measurement_list($deviceId, 'lan_test', 100);
+    // Mitschnitte zu fehlgeschlagenen Tests (nur fuer Rollen mit Schreibrecht sichtbar).
+    $captureIds = [];
+    foreach ($tests as $t) {
+        $cid = (json_decode((string) $t['data'], true) ?: [])['capture_id'] ?? null;
+        if (is_string($cid)) {
+            $captureIds[] = $cid;
+        }
+    }
+    $captureInfo = captures_existing($deviceId, $captureIds);
 
     // LAN-Zeitreihe chronologisch aufsteigend fuer das Diagramm.
     $lanSeries = ['labels' => [], 'upload' => [], 'download' => []];
@@ -1113,11 +1219,13 @@ function render_device_detail(array $device): void
         $ts = $t['client_timestamp'] ?? $t['received_at'];
 
         if (!isset($testsBySsid[$ssid])) {
-            $testsBySsid[$ssid] = ['labels' => [], 'rtt' => [], 'assoc' => [], 'dhcp' => [], 'auth' => [], 'signal' => [], 'iperf3' => [], 'iperf3_down' => []];
+            $testsBySsid[$ssid] = ['labels' => [], 'rtt' => [], 'assoc' => [], 'scan' => [], 'dhcp' => [], 'auth' => [], 'signal' => [], 'iperf3' => [], 'iperf3_down' => []];
         }
         $testsBySsid[$ssid]['labels'][] = format_local((string) $ts, 'd.m. H:i');
         $testsBySsid[$ssid]['rtt'][] = $data['ping_rtt_avg_ms'] ?? null;
         $testsBySsid[$ssid]['assoc'][] = $data['assoc_seconds'] ?? null;
+        // Anteil des Scans an der Assoziationszeit (ab Probe 1.0.1.34).
+        $testsBySsid[$ssid]['scan'][] = $data['scan_seconds'] ?? null;
         $testsBySsid[$ssid]['dhcp'][] = $data['dhcp_seconds'] ?? null;
         $testsBySsid[$ssid]['auth'][] = $data['auth_seconds'] ?? null;
         // Signalstaerke des Links am Testende; aeltere Tests ohne "link"-Block
@@ -1135,17 +1243,10 @@ function render_device_detail(array $device): void
     // fehlgeschlagen sind (neuester Test je SSID aus $tests, das ist
     // bereits nach received_at DESC sortiert).
     $online = device_is_online($device['last_seen_at'] ?? null);
-    $latestPerSsid = [];
-    foreach ($tests as $t) {
-        $data = json_decode((string) $t['data'], true) ?: [];
-        $ssid = $data['ssid'] ?? null;
-        if ($ssid === null || isset($latestPerSsid[$ssid])) {
-            continue;
-        }
-        $latestPerSsid[$ssid] = !empty($data['connected']);
-    }
-    $ssidOkCount = count(array_filter($latestPerSsid));
-    $ssidTotalCount = count($latestPerSsid);
+    $testSummary = connection_test_summary($tests);
+    $latestPerSsid = $testSummary['latest_per_ssid'];
+    $ssidOkCount = $testSummary['ssid_ok'];
+    $ssidTotalCount = $testSummary['ssid_total'];
     $lastScan = $scans[0] ?? null;
     $lastScanCount = null;
     $localIps = [];
@@ -1515,6 +1616,10 @@ function site_alerting_from_post(): array
         'schedule_start_hour' => min(23, max(0, (int) ($_POST['schedule_start_hour'] ?? 8))),
         'schedule_end_hour' => min(24, max(1, (int) ($_POST['schedule_end_hour'] ?? 20))),
         'language' => isset(WLANMON_LANGS[$_POST['language'] ?? '']) ? $_POST['language'] : 'de',
+        // Leer oder 0 = Regel aus.
+        'auth_slow_seconds' => (float) str_replace(',', '.', (string) ($_POST['auth_slow_seconds'] ?? '')) > 0
+            ? min(999.9, round((float) str_replace(',', '.', (string) $_POST['auth_slow_seconds']), 1))
+            : null,
     ];
 }
 
@@ -1549,6 +1654,7 @@ function render_site_alerting(int $siteId, ?array $testResult = null): void
             'schedule_start_hour' => 8,
             'schedule_end_hour' => 20,
             'language' => 'de',
+            'auth_slow_seconds' => null,
         ];
     }
     $settingsSaved = isset($_GET['saved']);
@@ -1605,6 +1711,10 @@ function render_users(?string $error = null): void
     $sites = site_list();
     $userSaved = isset($_GET['saved']);
     $userDeleted = isset($_GET['deleted']);
+    $userDisabled = isset($_GET['disabled']);
+    $userEnabled = isset($_GET['enabled']);
+    $disableSupported = users_disabled_supported();
+    $me = current_user();
     require __DIR__ . '/../src/templates/users.php';
 }
 
@@ -1721,6 +1831,43 @@ function handle_delete_user(int $id): void
     exit;
 }
 
+/**
+ * Konto deaktivieren bzw. reaktivieren (siehe user_set_disabled()). Das
+ * eigene Konto ist ausgenommen - so bleibt immer mindestens ein aktiver
+ * Admin uebrig, der die Sperre wieder aufheben kann.
+ */
+function handle_set_user_disabled(int $id, bool $disabled): void
+{
+    $me = current_user();
+    if ($me !== null && (int) $me['id'] === $id) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '400 - ' . __('Der eigene Account kann nicht deaktiviert werden') . "\n";
+        exit;
+    }
+    $user = user_find($id);
+    if ($user === null) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '404 - ' . __('Benutzer nicht gefunden') . "\n";
+        exit;
+    }
+    if (!users_disabled_supported()) {
+        render_users(__('Deaktivieren ist nicht verfügbar: die Datenbankspalte users.disabled_at fehlt und konnte nicht angelegt werden.'));
+        return;
+    }
+    if ((bool) $user['disabled'] !== $disabled) {
+        user_set_disabled($id, $disabled);
+        audit_log('user', (string) $id, $disabled ? 'disabled' : 'enabled', [[
+            'field' => 'status',
+            'old' => $disabled ? 'active' : 'disabled',
+            'new' => $disabled ? 'disabled' : 'active',
+        ]]);
+    }
+    header('Location: /users?' . ($disabled ? 'disabled=1' : 'enabled=1'));
+    exit;
+}
+
 function handle_resend_invite(int $id): void
 {
     $user = user_find($id);
@@ -1729,6 +1876,10 @@ function handle_resend_invite(int $id): void
         header('Content-Type: text/plain; charset=utf-8');
         echo '404 - ' . __('Benutzer nicht gefunden') . "\n";
         exit;
+    }
+    if (!empty($user['disabled'])) {
+        render_users(__('Dieser Benutzer ist deaktiviert - erst reaktivieren, dann erneut einladen.'));
+        return;
     }
     $token = invite_create($id);
     $mailResult = invite_send_email($user, $token);

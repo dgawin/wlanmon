@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS users (
     -- src/I18n.php. Bestehende Installation: wird beim ersten Umschalten
     -- automatisch angelegt, sonst: ALTER TABLE users ADD COLUMN language VARCHAR(5) NULL;
     language       VARCHAR(5) NULL,
+    -- Konto deaktiviert seit (UTC), NULL = aktiv - siehe user_set_disabled()
+    -- in src/User.php. Bestehende Installation: wird beim ersten Aufruf
+    -- automatisch angelegt, sonst: ALTER TABLE users ADD COLUMN disabled_at DATETIME NULL;
+    disabled_at    DATETIME NULL,
     created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -233,6 +237,28 @@ CREATE TABLE IF NOT EXISTS site_alerting (
     -- Sprache der Alert-Nachrichten ('de'/'en', NULL = Deutsch). Fehlt die
     -- Spalte in einer älteren Installation, legt site_alerting_set() sie an.
     language                    VARCHAR(5) NULL,
+    -- Regel "auth_slow:<SSID>" (check_alerts.php): 802.1X-Anmeldung bei den
+    -- letzten consecutive_test_failures Tests jeweils laenger als dieser
+    -- Wert in Sekunden. NULL = Regel aus. Fehlt die Spalte, legt
+    -- site_alerting_set() sie an.
+    auth_slow_seconds           DECIMAL(5,1) NULL,
     updated_at                  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_site_alerting_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Mitschnitte fehlgeschlagener Connection-Tests (src/Capture.php): pcap und
+-- Adapter-Ereignisse ("iw event") je capture_id aus dem Testergebnis.
+-- Aufbewahrung: capture_days unter /settings/retention (Standard 30 Tage).
+-- Bestehende Installationen: wird beim ersten Mitschnitt automatisch angelegt.
+CREATE TABLE IF NOT EXISTS captures (
+    id          CHAR(32) NOT NULL PRIMARY KEY,
+    device_id   VARCHAR(191) NOT NULL,
+    created_at  DATETIME NOT NULL,
+    pcap        MEDIUMBLOB NULL,
+    pcap_size   INT UNSIGNED NOT NULL DEFAULT 0,
+    events      MEDIUMTEXT NULL,
+    -- Log von wpa_supplicant (ab Dashboard 1.0.1.49, wird in bestehenden
+    -- Tabellen automatisch ergaenzt, siehe captures_ensure_table()).
+    wpa_log     MEDIUMTEXT NULL,
+    KEY idx_captures_device (device_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

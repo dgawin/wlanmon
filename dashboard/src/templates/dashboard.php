@@ -61,6 +61,9 @@
                 <th><?= te('Zuletzt gesehen') ?></th>
                 <th><?= te('Version') ?></th>
                 <th><?= te('Netze im letzten Scan') ?></th>
+                <th title="<?= te('Neuester Test je SSID') ?>"><?= te('Ziel-SSIDs verbunden') ?></th>
+                <th title="<?= te('Über die letzten 100 Connection-Tests') ?>"><?= te('Erfolgsquote') ?></th>
+                <th title="<?= te('Über die letzten 100 Connection-Tests') ?>"><?= te('Ø Assoziation') ?> / 802.1X / DHCP</th>
                 <th><?= te('Letzter Connection-Test') ?></th>
                 <th><?= te('LAN iperf3 (↑ / ↓)') ?></th>
             </tr>
@@ -122,6 +125,21 @@
                         <?php endif; ?>
                     <?php else: ?>–<?php endif; ?>
                 </td>
+                <?php
+                $ts = $row['test_summary'];
+                $fmtSec = fn(?float $v): string => $v !== null ? e(number_format($v, 1)) . 's' : '–';
+                ?>
+                <td class="<?= $ts['ssid_total'] > 0 && $ts['ssid_ok'] < $ts['ssid_total'] ? 'fail' : '' ?>">
+                    <?= $ts['ssid_total'] > 0 ? e($ts['ssid_ok']) . ' / ' . e($ts['ssid_total']) : '–' ?>
+                </td>
+                <?php // Abgerundet: ein einzelner Fehlschlag soll nie als 100 % erscheinen. ?>
+                <td class="<?= $ts['test_count'] > 0 && $ts['test_ok'] < $ts['test_count'] ? 'fail' : '' ?>"
+                    <?php if ($ts['test_count'] > 0): ?>title="<?= te('%d von %d Tests erfolgreich', $ts['test_ok'], $ts['test_count']) ?>"<?php endif; ?>>
+                    <?= $ts['test_count'] > 0 ? e((int) floor(100 * $ts['test_ok'] / $ts['test_count'])) . ' %' : '–' ?>
+                </td>
+                <td style="white-space:nowrap">
+                    <?= $fmtSec($ts['avg_assoc']) ?> / <?= $fmtSec($ts['avg_auth']) ?> / <?= $fmtSec($ts['avg_dhcp']) ?>
+                </td>
                 <td>
                     <?php if ($row['last_test']):
                         $td = json_decode((string) $row['last_test']['data'], true) ?: []; ?>
@@ -161,7 +179,7 @@
                             / <?= isset($ld['download_mbps']) ? e(round((float) $ld['download_mbps'])) : '–' ?>
                             <span class="muted">Mbit/s</span>
                         <?php else: ?>
-                            <span class="fail" title="<?= e($ld['error'] ?? '') ?>"><?= te('fehlgeschlagen') ?></span>
+                            <span class="fail" title="<?= e(probe_error_text($ld)) ?>"><?= te('fehlgeschlagen') ?></span>
                         <?php endif; ?>
                     <?php else: ?>
                         <span class="muted">–</span>

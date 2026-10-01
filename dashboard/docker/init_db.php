@@ -52,7 +52,9 @@ foreach ($statements as $stmt) {
 $migrations = [
     ['devices', 'auto_update', 'LONGTEXT NULL AFTER probe_version'],
     ['users', 'language', 'VARCHAR(5) NULL AFTER role'],
+    ['users', 'disabled_at', 'DATETIME NULL AFTER language'],
     ['site_alerting', 'language', 'VARCHAR(5) NULL AFTER schedule_end_hour'],
+    ['site_alerting', 'auth_slow_seconds', 'DECIMAL(5,1) NULL AFTER language'],
 ];
 foreach ($migrations as [$table, $column, $definition]) {
     $check = $pdo->prepare(

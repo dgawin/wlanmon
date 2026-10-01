@@ -13,7 +13,7 @@ require_once __DIR__ . '/Settings.php';
  */
 
 /** Standard-Aufbewahrung in Tagen, solange nichts gespeichert ist. */
-const RETENTION_DEFAULTS = ['scan_days' => 90, 'test_days' => 365];
+const RETENTION_DEFAULTS = ['scan_days' => 90, 'test_days' => 365, 'capture_days' => 30];
 
 /** Welche Messarten zu welcher Einstellung gehören. */
 const RETENTION_KINDS = ['scan_days' => ['scan'], 'test_days' => ['connection_test', 'lan_test']];
@@ -27,7 +27,7 @@ const RETENTION_MAX_DAYS = 3650;
  */
 const RETENTION_BATCH = 5000;
 
-/** @return array{scan_days: int, test_days: int} */
+/** @return array{scan_days: int, test_days: int, capture_days: int} */
 function retention_config(): array
 {
     $saved = setting_get('retention') ?? [];
@@ -92,6 +92,15 @@ function retention_cleanup(): array
             : 0;
     } catch (PDOException $e) {
         $deleted['audit'] = 0;
+    }
+    // Mitschnitte fehlgeschlagener Tests (Capture.php): enthalten MACs und
+    // 802.1X-Identitaeten, daher eigene, kurze Frist. Tabelle evtl. noch nicht da.
+    try {
+        $deleted['captures'] = $cfg['capture_days'] > 0
+            ? retention_delete_batched('DELETE FROM captures WHERE created_at < ?', [retention_cutoff($cfg['capture_days'])])
+            : 0;
+    } catch (PDOException $e) {
+        $deleted['captures'] = 0;
     }
     // Abgelaufene Einladungslinks sind wertlos.
     $deleted['invites'] = retention_delete_batched('DELETE FROM invites WHERE expires_at < ?', [gmdate('Y-m-d H:i:s')]);

@@ -3,6 +3,10 @@
 /** @var array $sites */
 /** @var bool $userSaved */
 /** @var bool $userDeleted */
+/** @var bool $userDisabled */
+/** @var bool $userEnabled */
+/** @var bool $disableSupported */
+/** @var array|null $me */
 /** @var string|null $error */
 
 $roleLabels = ['admin' => 'Admin', 'user' => 'User', 'viewer' => 'Viewer'];
@@ -31,6 +35,12 @@ $roleLabels = ['admin' => 'Admin', 'user' => 'User', 'viewer' => 'Viewer'];
 <?php if ($userDeleted): ?>
     <p class="ok"><i class="fa-solid fa-circle-check"></i> <?= te('Benutzer gelöscht.') ?></p>
 <?php endif; ?>
+<?php if ($userDisabled): ?>
+    <p class="ok"><i class="fa-solid fa-circle-check"></i> <?= te('Benutzer deaktiviert.') ?></p>
+<?php endif; ?>
+<?php if ($userEnabled): ?>
+    <p class="ok"><i class="fa-solid fa-circle-check"></i> <?= te('Benutzer reaktiviert.') ?></p>
+<?php endif; ?>
 <?php if (!empty($error)): ?>
     <p class="fail"><i class="fa-solid fa-triangle-exclamation"></i> <?= e($error) ?></p>
 <?php endif; ?>
@@ -56,7 +66,9 @@ $roleLabels = ['admin' => 'Admin', 'user' => 'User', 'viewer' => 'Viewer'];
                     <?php endif; ?>
                 </td>
                 <td>
-                    <?php if ($u['active']): ?>
+                    <?php if ($u['disabled']): ?>
+                        <span class="pill pill-muted"><i class="fa-solid fa-ban"></i> <?= te('deaktiviert') ?></span>
+                    <?php elseif ($u['active']): ?>
                         <span class="pill pill-ok"><i class="fa-solid fa-circle-check"></i> <?= te('aktiv') ?></span>
                     <?php else: ?>
                         <span class="pill pill-warn"><i class="fa-solid fa-clock"></i> <?= te('eingeladen') ?></span>
@@ -66,7 +78,22 @@ $roleLabels = ['admin' => 'Admin', 'user' => 'User', 'viewer' => 'Viewer'];
                     <a href="/users/<?= (int) $u['id'] ?>/edit" class="btn-secondary btn-small">
                         <i class="fa-solid fa-pen"></i> <?= te('Bearbeiten') ?>
                     </a>
-                    <?php if (!$u['active']): ?>
+                    <?php // Das eigene Konto nicht deaktivierbar, siehe handle_set_user_disabled(). ?>
+                    <?php if ($disableSupported && (int) $u['id'] !== (int) ($me['id'] ?? 0)): ?>
+                        <?php if ($u['disabled']): ?>
+                            <form method="post" action="/users/<?= (int) $u['id'] ?>/enable" class="inline-form">
+                                <?= csrf_field() ?>
+                                <button type="submit" class="btn-secondary btn-small"><i class="fa-solid fa-user-check"></i> <?= te('Reaktivieren') ?></button>
+                            </form>
+                        <?php else: ?>
+                            <form method="post" action="/users/<?= (int) $u['id'] ?>/disable" class="inline-form"
+                                  onsubmit="return confirm(<?= tjs('Benutzer „%s“ deaktivieren? Er wird sofort abgemeldet und kann sich nicht mehr anmelden, bis er reaktiviert wird.', $u['username']) ?>);">
+                                <?= csrf_field() ?>
+                                <button type="submit" class="btn-secondary btn-small"><i class="fa-solid fa-user-slash"></i> <?= te('Deaktivieren') ?></button>
+                            </form>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                    <?php if (!$u['active'] && !$u['disabled']): ?>
                         <form method="post" action="/users/<?= (int) $u['id'] ?>/resend-invite" class="inline-form">
                             <?= csrf_field() ?>
                             <button type="submit" class="btn-secondary btn-small"><i class="fa-solid fa-paper-plane"></i> <?= te('Erneut einladen') ?></button>

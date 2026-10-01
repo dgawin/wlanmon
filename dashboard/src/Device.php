@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/Response.php';
 require_once __DIR__ . '/Secrets.php';
+require_once __DIR__ . '/Capture.php';
 
 /** site_name (aus sites, per LEFT JOIN) fuer Anzeige - site_id bleibt die massgebliche Zuordnung. */
 function device_find(string $id): ?array
@@ -68,6 +69,8 @@ function device_delete(string $id): void
 {
     $stmt = db()->prepare('DELETE FROM devices WHERE id = ?');
     $stmt->execute([$id]);
+    // Mitschnitte haengen nicht per Fremdschluessel am Geraet (Tabelle entsteht erst spaeter).
+    captures_delete_for_device($id);
 }
 
 /**

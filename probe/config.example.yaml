@@ -56,6 +56,11 @@ connection_tests:
   interval_seconds: 900
   # Timeout für Assoziation + DHCP in Sekunden, bevor ein Test als "failed" gilt
   connect_timeout_seconds: 30
+  # Fehlgeschlagene Tests mitschneiden: pcap (EAPOL, DHCP, ARP, DNS, ICMP;
+  # braucht tcpdump) und die Adapter-Ereignisse aus "iw event". Wird ans
+  # Dashboard hochgeladen (Download in der Testtabelle). Enthaelt MAC-Adressen
+  # und ggf. 802.1X-Identitaeten. Siehe README, "Capturing failed tests".
+  capture_on_failure: true
   # Letzter Fallback für den Ping-Test nach erfolgreichem Connect. Je Ziel-SSID
   # gilt sonst "ping_target" (siehe targets); ist dort nichts eingetragen, wird
   # das Default-Gateway des Netzes gepingt.

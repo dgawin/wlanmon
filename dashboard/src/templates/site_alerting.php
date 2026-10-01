@@ -75,6 +75,12 @@ $resultPill = function (string $channel) use ($testResult): void {
                    value="<?= e($siteAlerting['consecutive_test_failures'] ?? 3) ?>">
         </label>
         <label>
+            <?= te('802.1X gilt als langsam ab (Sekunden, leer = aus)') ?>
+            <input type="number" min="0" step="0.5" name="auth_slow_seconds"
+                   value="<?= isset($siteAlerting['auth_slow_seconds']) ? e((string) (float) $siteAlerting['auth_slow_seconds']) : '' ?>">
+            <span class="muted"><?= te('Alarm, wenn die 802.1X-Anmeldung einer SSID bei den letzten Tests (Anzahl wie oben) jedes Mal länger dauerte – erkennt einen langsamen oder schlecht erreichbaren RADIUS-Server, z. B. in der Cloud.') ?></span>
+        </label>
+        <label>
             <?= te('Erinnerung bei andauernder Störung nach (Minuten)') ?>
             <input type="number" min="5" name="repeat_after_minutes"
                    value="<?= e($siteAlerting['repeat_after_minutes'] ?? 240) ?>">

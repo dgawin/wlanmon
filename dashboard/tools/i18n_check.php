@@ -36,9 +36,20 @@ foreach ($files as $path) {
     }
 }
 
+// Argumentnummer => Typ. Nummerierte Platzhalter (%5$s) zählen wie ihre
+// Position im Original - eine Übersetzung darf die Reihenfolge im Satz ändern.
 $placeholders = static function (string $s): array {
-    preg_match_all('/%(?:%|[sd])/', $s, $m);
-    return $m[0];
+    preg_match_all('/%(?:(\d+)\$)?([sd%])/', $s, $m, PREG_SET_ORDER);
+    $args = [];
+    $next = 1;
+    foreach ($m as $p) {
+        if ($p[2] === '%') {
+            continue;
+        }
+        $args[$p[1] !== '' ? (int) $p[1] : $next++] = $p[2];
+    }
+    ksort($args);
+    return $args;
 };
 
 $missing = array_diff_key($used, $en);

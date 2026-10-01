@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/Alerting.php';
+require_once __DIR__ . '/Session.php';
 
 // ---------------------------------------------------------------------
 // Benutzerverwaltung (Tabelle "users") + Einladungslinks (Tabelle
@@ -13,15 +14,26 @@ require_once __DIR__ . '/Alerting.php';
 
 const USER_ROLES = ['admin', 'user', 'viewer'];
 
+/**
+ * Spaltenliste fuer user_list()/user_find(): "active" = Passwort gesetzt
+ * (Einladung angenommen), "disabled" = Konto deaktiviert (siehe
+ * user_set_disabled()) - zwei unabhaengige Zustaende.
+ */
+function user_columns(): string
+{
+    return 'id, username, email, role, password_hash IS NOT NULL AS active, '
+        . (users_disabled_supported() ? 'disabled_at IS NOT NULL' : '0') . ' AS disabled, created_at';
+}
+
 /** @return array<int, array<string, mixed>> Nach Username sortiert, ohne password_hash. */
 function user_list(): array
 {
-    return db()->query('SELECT id, username, email, role, password_hash IS NOT NULL AS active, created_at FROM users ORDER BY username')->fetchAll();
+    return db()->query('SELECT ' . user_columns() . ' FROM users ORDER BY username')->fetchAll();
 }
 
 function user_find(int $id): ?array
 {
-    $stmt = db()->prepare('SELECT id, username, email, role, password_hash IS NOT NULL AS active, created_at FROM users WHERE id = ?');
+    $stmt = db()->prepare('SELECT ' . user_columns() . ' FROM users WHERE id = ?');
     $stmt->execute([$id]);
     $row = $stmt->fetch();
     return $row ?: null;
@@ -80,6 +92,18 @@ function user_sites_for(int $userId): array
     );
     $stmt->execute([$userId]);
     return $stmt->fetchAll();
+}
+
+/**
+ * Deaktiviert ein Konto bzw. hebt das wieder auf. Rolle, Standorte und
+ * Passwort bleiben erhalten; deaktiviert ist kein Login moeglich, eine
+ * laufende Sitzung endet bei der naechsten Anfrage (current_user()) und
+ * offene Einladungslinks gelten nicht (invite_find_valid()).
+ */
+function user_set_disabled(int $id, bool $disabled): void
+{
+    $stmt = db()->prepare('UPDATE users SET disabled_at = ' . ($disabled ? 'UTC_TIMESTAMP()' : 'NULL') . ' WHERE id = ?');
+    $stmt->execute([$id]);
 }
 
 function user_delete(int $id): void
@@ -164,6 +188,11 @@ function invite_find_valid(string $token): ?array
     }
     $expires = new DateTime((string) $row['expires_at'], new DateTimeZone('UTC'));
     if ($expires < new DateTime('now', new DateTimeZone('UTC'))) {
+        return null;
+    }
+    // Einladung eines inzwischen deaktivierten Kontos nicht mehr einloesen lassen.
+    $user = user_find((int) $row['user_id']);
+    if ($user === null || !empty($user['disabled'])) {
         return null;
     }
     return $row;

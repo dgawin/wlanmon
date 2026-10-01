@@ -36,6 +36,7 @@ from queue_store import QueueStore
 from sender import Sender
 from wifi_ops import (
     DEFAULT_CAPTIVE_PORTAL_URL,
+    capture_remove,
     channel_survey,
     ensure_regdomain,
     interface_ipv4,
@@ -298,6 +299,9 @@ class ConnectionTestLoop(threading.Thread):
         # lassen - stattdessen unten bei jedem Zyklus eine Warnung loggen
         # und einfach nichts tun, bis targets nachgetragen werden.
         self._targets = ct_cfg.get("targets") or []
+        # Fehlgeschlagene Tests mitschneiden (pcap + iw-Ereignisse, siehe FailureCapture in wifi_ops.py).
+        # Standard an; ueber das Dashboard je Geraet abschaltbar.
+        self._capture_on_failure = bool(ct_cfg.get("capture_on_failure", True))
         # Optionaler iperf3-Test ueber das Kabel (Upload + Download),
         # einmal pro Zyklus und unabhaengig von den Ziel-SSIDs.
         lan_cfg = ct_cfg.get("iperf3_lan") or {}
@@ -404,6 +408,7 @@ class ConnectionTestLoop(threading.Thread):
                             iperf3_bitrate_mbps=self._iperf3_bitrate_for(target),
                             eap=target.get("eap"),
                             random_mac=bool(target.get("random_mac")),
+                            capture_on_failure=self._capture_on_failure,
                             portal_login=target.get("captive_portal_login"),
                             captive_portal_url=(
                                 self._captive_portal_url
@@ -411,6 +416,19 @@ class ConnectionTestLoop(threading.Thread):
                                 else ""
                             ),
                         )
+                    if self._stop_event.is_set() and not result.connected:
+                        # Beim Herunterfahren (z.B. "systemctl restart" nach
+                        # einem Auto-Update) beendet systemd auch wpa_supplicant
+                        # und dhclient/dhcpcd dieses Tests - der Fehlschlag
+                        # ("Link bereits getrennt") kaeme dann von uns selbst,
+                        # nicht vom Netz. Nicht melden, nur protokollieren.
+                        log.warning(
+                            "Connection-Test %s beim Herunterfahren abgebrochen - "
+                            "Ergebnis verworfen (%s)", target["ssid"], result.error,
+                        )
+                        if result.capture_id:
+                            capture_remove(result.capture_id)
+                        break
                     result.iperf3_deferred = iperf3_deferred
                     if result.iperf3_started_at:
                         self._last_iperf3[target["ssid"]] = time.time()
@@ -436,7 +454,7 @@ class ConnectionTestLoop(threading.Thread):
                     if result.eap_method:
                         link_txt += (
                             f" eap={result.eap_method}"
-                            f" auth={result.auth_seconds}s"
+                            f" auth={f'{result.auth_seconds}s' if result.auth_seconds is not None else '-'}"
                         )
                     if result.link:
                         tx = result.link.get("tx_rate") or {}

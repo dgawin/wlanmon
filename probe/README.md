@@ -70,6 +70,26 @@ for details and prerequisites):
 sudo ./setup_wlanmon_probe.sh
 ```
 
+The script installs everything and then starts a **setup wizard**
+([`config_wizard.py`](config_wizard.py)). Have the device ID and its API key
+from the dashboard at hand (Devices -> add device). The wizard asks for:
+
+- device ID, dashboard URL and API key – and **tests the connection** right
+  away (a wrong key or an untrusted certificate is reported immediately)
+- how to verify the server certificate (public, internal CA file, or not at
+  all – see [Server connection & TLS](#server-connection--tls))
+- the Wi-Fi adapter for the tests (lists all adapters and warns if one of
+  them carries the network uplink), country code
+- central configuration from the dashboard, auto-update channel, USB
+  watchdog, OLED display
+
+It only changes these values in `/etc/wlanmon-probe/config.yaml`; comments and
+all other settings stay as they are, and a backup is kept. Run it again any
+time with `sudo wlanmon setup` – current values are offered as defaults.
+`--no-wizard` skips it for unattended installs; on the very first run, which
+switches to classic interface names (`net.ifnames=0`), the wizard follows
+after the required reboot.
+
 Manually:
 
 ```bash
@@ -127,14 +147,14 @@ A menu for the commands you keep needing on a probe:
 - **Wi-Fi diagnostics:** adapter, country setting, bands/channels, scan as a
   table (all networks, 2.4 GHz active/passive), search for an SSID, channel
   occupancy, `diagnose_wifi.sh`
-- **Configuration:** show config.yaml (keys masked) and edit it (with YAML
-  validation and restart), central configuration from the dashboard
+- **Configuration:** setup wizard, show config.yaml (keys masked) and edit it
+  (with YAML validation and restart), central configuration from the dashboard
   (passwords masked)
 - **Network/server:** addresses/routes, server reachable, queue, time/NTP
 - **System:** memory/temperature, reboot, shutdown
 
 Directly, without the menu: `sudo wlanmon status`, `log` (live), `update-log`,
-`restart`, `update`, `help`.
+`restart`, `update`, `setup` (wizard), `help`.
 
 The tool lives in the Git checkout (`auto_update.repo_dir`) and is kept up to
 date by the auto-update with every `git pull`. `setup_wlanmon_probe.sh` sets up
@@ -322,7 +342,11 @@ journalctl -u wlanmon-probe-update -f
 - **Connection test loop** (`connection_tests.interval_seconds`): connects to
   each configured target SSID in turn (`wpa_supplicant` + `dhclient`),
   measures association time, DHCP time, ping RTT/loss and optionally iperf3
-  throughput, then disconnects cleanly. Right before the DHCP attempt,
+  throughput, then disconnects cleanly. `assoc_seconds` runs from the start of
+  `wpa_supplicant` to the 802.11 association and includes its scan for the
+  target network; since 1.0.1.34 `scan_seconds` reports that scan part
+  separately (until `wpa_state` leaves `SCANNING`, i.e. an AP was found and the
+  login starts), so the pure association is `assoc_seconds - scan_seconds`. Right before the DHCP attempt,
   promiscuous mode is explicitly switched off on the interface
   (`ip link set <iface> promisc off`) – some drivers (observed: `brcmfmac` on
   the onboard Wi-Fi of a Raspberry Pi 5) occasionally leave the interface in
@@ -429,10 +453,51 @@ journalctl -u wlanmon-probe-update -f
   Do not use it on MAC-filtered networks or with DHCP reservations. If the
   driver does not allow the change, the test continues with the existing MAC
   (warning in the log).
+- **Error codes** (since 1.0.1.40): a failed test carries `error` (German text
+  for the probe's own log) and `error_codes`, a list of building blocks such as
+  `[{"code": "assoc_failed", "timeout": false}, {"code": "sae_password_wrong",
+  "status": 1}]` (see `_err()` in `wifi_ops.py`). The dashboard formulates the
+  message from the codes in the UI or alert language. When adding a new code,
+  also add it to the dashboard's `src/ProbeError.php`; until then the dashboard
+  falls back to the German text.
 - **Queue** (`queue_store.py`): every measurement first goes into a local
   SQLite file. A sender thread transfers unacknowledged entries in batches over
   HTTPS to `<server.url>/measurements`. On errors the entry stays in the queue
   and is retried with exponential backoff.
+
+## Capturing failed tests
+
+Since 1.0.1.35 the probe records every connection test and keeps the recording
+only if the test fails (`connection_tests.capture_on_failure`, on by default,
+switchable per device in the dashboard):
+
+- **pcap** of the test interface via `tcpdump` (installed by
+  `setup_wlanmon_probe.sh`): EAPOL (802.1X and 4-way handshake), DHCP, ARP, DNS
+  and ICMP – no iperf3 traffic. The adapter runs in client ("managed") mode, so
+  the 802.11 management frames of the association itself (authentication,
+  association request/response, deauth) are **not** in the pcap; that would
+  need a second adapter in monitor mode.
+- **Adapter events** from `iw event -t`: authenticate/associate/connect/deauth/
+  disconnect with status and reason codes – the part tcpdump cannot see.
+- **wpa_supplicant log** (since 1.0.1.38): EAP method, server certificate and
+  the failure reason from the client's point of view. Normal verbosity, so no
+  passwords or PSKs.
+
+While capturing, `wpa_supplicant` runs with `-p control_port=0` (since
+1.0.1.37): otherwise it sends EAPOL frames through the nl80211 control port,
+bypassing the interface, and tcpdump sees none of them (verified on a NanoPi
+with mt7921u). For the AP nothing changes.
+
+A failed test carries a `capture_id`; the files wait in
+`/var/lib/wlanmon-probe/captures/` (at most 1.5 MB pcap per test, 20 MB in
+total, oldest dropped first) until the sender has uploaded them to
+`POST <server.url>/devices/<device_id>/captures/<capture_id>`. In the dashboard
+they appear as download links in the error column of the test table (admin and
+user only; retention 30 days by default). Captures contain MAC addresses and
+possibly 802.1X identities – keep that in mind before passing them on.
+
+Without `tcpdump` only the events are recorded (one warning in the log); on
+existing probes install it with `sudo apt install tcpdump`.
 
 ## Portal modules
 
@@ -585,6 +650,7 @@ server.
         "security": "wpa2-psk",
         "connected": true,
         "assoc_seconds": 1.2,
+        "scan_seconds": 0.9,
         "dhcp_seconds": 0.8,
         "ip_address": "10.0.5.42",
         "ping_sent": 5,

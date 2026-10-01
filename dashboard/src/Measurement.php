@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/Response.php';
+require_once __DIR__ . '/Capture.php';
 
 function measurement_insert(string $deviceId, string $kind, ?string $clientTimestamp, array $data): void
 {
@@ -56,6 +57,48 @@ function measurement_list(string $deviceId, string $kind, int $limit = 20): arra
 }
 
 /**
+ * Kennzahlen über Connection-Tests (neueste zuerst, wie aus measurement_list()):
+ * wie viele SSIDs im jeweils neuesten Test verbunden waren, Tests gesamt /
+ * erfolgreich und die Durchschnittsdauern (nur über Tests, in denen der Wert
+ * vorlag - 802.1X z.B. nur bei EAP-SSIDs).
+ *
+ * @param array<int, array<string, mixed>> $tests
+ * @return array{latest_per_ssid: array<string, bool>, ssid_ok: int, ssid_total: int, test_count: int, test_ok: int,
+ *               avg_assoc: ?float, avg_auth: ?float, avg_dhcp: ?float}
+ */
+function connection_test_summary(array $tests): array
+{
+    $latestPerSsid = [];
+    $testOk = 0;
+    $sums = ['assoc' => [], 'auth' => [], 'dhcp' => []];
+    foreach ($tests as $t) {
+        $data = json_decode((string) $t['data'], true) ?: [];
+        $connected = !empty($data['connected']);
+        $testOk += $connected ? 1 : 0;
+        $ssid = $data['ssid'] ?? null;
+        if ($ssid !== null && !isset($latestPerSsid[$ssid])) {
+            $latestPerSsid[$ssid] = $connected;
+        }
+        foreach ($sums as $key => $_) {
+            if (isset($data[$key . '_seconds'])) {
+                $sums[$key][] = (float) $data[$key . '_seconds'];
+            }
+        }
+    }
+    $avg = fn(array $v): ?float => $v === [] ? null : array_sum($v) / count($v);
+    return [
+        'latest_per_ssid' => $latestPerSsid,
+        'ssid_ok' => count(array_filter($latestPerSsid)),
+        'ssid_total' => count($latestPerSsid),
+        'test_count' => count($tests),
+        'test_ok' => $testOk,
+        'avg_assoc' => $avg($sums['assoc']),
+        'avg_auth' => $avg($sums['auth']),
+        'avg_dhcp' => $avg($sums['dhcp']),
+    ];
+}
+
+/**
  * Löscht eine einzelne Messung. device_id wird bewusst in der WHERE-
  * Klausel mitgeführt (nicht nur die id) - verhindert, dass über die
  * Detailseite eines Geräts versehentlich/absichtlich die ID einer
@@ -63,6 +106,7 @@ function measurement_list(string $deviceId, string $kind, int $limit = 20): arra
  */
 function measurement_delete(int $id, string $deviceId): void
 {
+    measurement_delete_captures($deviceId, 'id = ?', [$id]);
     $stmt = db()->prepare('DELETE FROM measurements WHERE id = ? AND device_id = ?');
     $stmt->execute([$id, $deviceId]);
 }
@@ -74,10 +118,15 @@ function measurement_delete(int $id, string $deviceId): void
 function measurement_delete_all(string $deviceId, ?string $kind = null): void
 {
     if ($kind !== null) {
+        if ($kind === 'connection_test') {
+            // alle Mitschnitte des Geraets, auch frueher verwaiste
+            captures_delete_for_device($deviceId);
+        }
         $stmt = db()->prepare('DELETE FROM measurements WHERE device_id = ? AND kind = ?');
         $stmt->execute([$deviceId, $kind]);
         return;
     }
+    captures_delete_for_device($deviceId);
     $stmt = db()->prepare('DELETE FROM measurements WHERE device_id = ?');
     $stmt->execute([$deviceId]);
 }
@@ -96,6 +145,7 @@ function measurement_delete_many(string $deviceId, array $ids): void
         return;
     }
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    measurement_delete_captures($deviceId, "id IN ($placeholders)", $ids);
     $stmt = db()->prepare("DELETE FROM measurements WHERE device_id = ? AND id IN ($placeholders)");
     $stmt->execute([$deviceId, ...$ids]);
 }
@@ -116,17 +166,46 @@ function measurement_delete_all_for_ssid(string $deviceId, ?string $ssid): void
     $stmt = db()->prepare("SELECT id, data FROM measurements WHERE device_id = ? AND kind = 'connection_test'");
     $stmt->execute([$deviceId]);
     $ids = [];
+    $captureIds = [];
     foreach ($stmt->fetchAll() as $row) {
         $data = json_decode((string) $row['data'], true) ?: [];
         $rowSsid = $data['ssid'] ?? null;
         if (($ssid === null && ($rowSsid === null || $rowSsid === '')) || $rowSsid === $ssid) {
             $ids[] = (int) $row['id'];
+            if (is_string($data['capture_id'] ?? null)) {
+                $captureIds[] = $data['capture_id'];
+            }
         }
     }
     if ($ids === []) {
         return;
     }
+    captures_delete_ids($deviceId, $captureIds);
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
     $del = db()->prepare("DELETE FROM measurements WHERE device_id = ? AND id IN ($placeholders)");
     $del->execute([$deviceId, ...$ids]);
+}
+
+/**
+ * Loescht vor dem Loeschen von Messungen deren Mitschnitte (pcap, Ereignisse,
+ * wpa_supplicant-Log). Kein Fremdschluessel moeglich, weil die Probe den
+ * Mitschnitt erst nach der Messung hochlaedt - der Verweis steht nur als
+ * capture_id im JSON. Nur connection_test-Messungen haben Mitschnitte, Scans
+ * werden deshalb gar nicht erst geladen. $where bezieht sich auf die
+ * Tabelle measurements und wird mit device_id und kind UND-verknuepft.
+ */
+function measurement_delete_captures(string $deviceId, string $where, array $params): void
+{
+    $stmt = db()->prepare(
+        "SELECT data FROM measurements WHERE device_id = ? AND kind = 'connection_test' AND ($where)"
+    );
+    $stmt->execute([$deviceId, ...$params]);
+    $captureIds = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $json) {
+        $data = json_decode((string) $json, true) ?: [];
+        if (is_string($data['capture_id'] ?? null)) {
+            $captureIds[] = $data['capture_id'];
+        }
+    }
+    captures_delete_ids($deviceId, $captureIds);
 }
