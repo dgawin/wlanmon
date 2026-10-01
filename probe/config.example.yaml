@@ -99,43 +99,46 @@ connection_tests:
     duration_seconds: 5
     port: 5201
 
-  # Liste der Netze, die getestet werden sollen
-  targets:
-    - ssid: "Firmennetz-Corp"
-      psk: "CHANGE-ME"
-      # "open", "wpa2-psk" (default), "wpa3-psk" (reines WPA3-Personal/SAE),
-      # "wpa2-wpa3-psk" (Mixed-/Transition-Mode, z.B. Fritz!Box-Standard),
-      # "wpa2-eap" (802.1X, siehe Block "eap" im Beispiel unten)
-      security: "wpa2-psk"
-    - ssid: "Firmennetz-Guest"
-      psk: ""
-      security: "open"
-      captive_portal_check: true   # Captive Portal fuer diese SSID pruefen
-      ping_target: ""              # leer = Default-Gateway dieses Netzes
-      iperf3_enabled: true         # false = iperf3 fuer diese SSID ueberspringen
-      # Eigener iperf3-Server/-Dauer/-Port nur noetig, wenn diese SSID in ein
-      # anderes VLAN mit eigenem iperf3-Server fuehrt - leer/0 = Standard
-      # aus connection_tests.iperf3_server/-duration/-port oben verwenden.
-      iperf3_server: ""
-      iperf3_duration_seconds: 0
-      iperf3_port: 0
-      # Nach dem Upload zusaetzlich den Download messen (verlaengert den
-      # Test um iperf3_duration_seconds) - je SSID, Standard an.
-      iperf3_download: true
-      # Ratenbegrenzung in Mbit/s (iperf3 -b), 0 = ohne. Unbegrenzt lastet
-      # der Test den Kanal fuer seine Dauer voll aus (im Dashboard-Verlauf
-      # als Last-Zeitraum markiert); begrenzt prueft er, ob die Rate stabil
-      # erreicht wird, und stoert andere Nutzer kaum.
-      iperf3_bitrate_mbps: 0
-      random_mac: true             # pro Test zufaellige MAC (Portale erscheinen jedes Mal)
-      # Automatischer Login am Captive Portal. Danach laufen Ping/iperf3;
-      # ohne erfolgreichen Login werden sie uebersprungen.
-      captive_portal_login:
-        enabled: true
-        type: "auto"                 # "auto" (per Redirect erkennen) oder z.B. "cirrus"
-        username: ""                 # leer bei Portalen mit nur Nutzungsbedingungen
-        password: ""                 # bei Access-Code-Portalen: der Code
-        logoff: true                 # Sitzung nach dem Test abmelden
+  # Liste der Netze, die getestet werden sollen. Normalerweise im Dashboard
+  # gepflegt (remote_config) - lokal leer, damit eine frisch installierte
+  # Probe vor der Einrichtung keine Beispiel-SSIDs testet und ans Dashboard
+  # meldet. Ohne Dashboard: "[]" streichen und die Beispiele einkommentieren.
+  targets: []
+    # - ssid: "Firmennetz-Corp"
+    #   psk: "CHANGE-ME"
+    #   # "open", "wpa2-psk" (default), "wpa3-psk" (reines WPA3-Personal/SAE),
+    #   # "wpa2-wpa3-psk" (Mixed-/Transition-Mode, z.B. Fritz!Box-Standard),
+    #   # "wpa2-eap" (802.1X, siehe Block "eap" im Beispiel unten)
+    #   security: "wpa2-psk"
+    # - ssid: "Firmennetz-Guest"
+    #   psk: ""
+    #   security: "open"
+    #   captive_portal_check: true   # Captive Portal fuer diese SSID pruefen
+    #   ping_target: ""              # leer = Default-Gateway dieses Netzes
+    #   iperf3_enabled: true         # false = iperf3 fuer diese SSID ueberspringen
+    #   # Eigener iperf3-Server/-Dauer/-Port nur noetig, wenn diese SSID in ein
+    #   # anderes VLAN mit eigenem iperf3-Server fuehrt - leer/0 = Standard
+    #   # aus connection_tests.iperf3_server/-duration/-port oben verwenden.
+    #   iperf3_server: ""
+    #   iperf3_duration_seconds: 0
+    #   iperf3_port: 0
+    #   # Nach dem Upload zusaetzlich den Download messen (verlaengert den
+    #   # Test um iperf3_duration_seconds) - je SSID, Standard an.
+    #   iperf3_download: true
+    #   # Ratenbegrenzung in Mbit/s (iperf3 -b), 0 = ohne. Unbegrenzt lastet
+    #   # der Test den Kanal fuer seine Dauer voll aus (im Dashboard-Verlauf
+    #   # als Last-Zeitraum markiert); begrenzt prueft er, ob die Rate stabil
+    #   # erreicht wird, und stoert andere Nutzer kaum.
+    #   iperf3_bitrate_mbps: 0
+    #   random_mac: true             # pro Test zufaellige MAC (Portale erscheinen jedes Mal)
+    #   # Automatischer Login am Captive Portal. Danach laufen Ping/iperf3;
+    #   # ohne erfolgreichen Login werden sie uebersprungen.
+    #   captive_portal_login:
+    #     enabled: true
+    #     type: "auto"                 # "auto" (per Redirect erkennen) oder z.B. "cirrus"
+    #     username: ""                 # leer bei Portalen mit nur Nutzungsbedingungen
+    #     password: ""                 # bei Access-Code-Portalen: der Code
+    #     logoff: true                 # Sitzung nach dem Test abmelden
     # 802.1X / WPA2-Enterprise (normalerweise ueber das Dashboard gepflegt;
     # Zertifikate/Schluessel stehen als PEM-Text direkt in der Config):
     # - ssid: "Firmennetz-Dot1x"
