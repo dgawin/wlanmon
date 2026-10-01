@@ -27,6 +27,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import urllib3
+
 from config_manager import ConfigWatcher, load_bootstrap, resolve_initial_config
 from display import DisplayLoop
 from probe_status import ProbeStatus
@@ -61,6 +63,27 @@ def setup_logging(cfg: dict) -> None:
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
         handlers=handlers,
     )
+
+
+def warn_insecure_server(server_cfg: dict) -> None:
+    """Einmal beim Start deutlich warnen, wenn die Verbindung zum Server
+    ungeschuetzt ist, statt der InsecureRequestWarning von urllib3 bei jeder
+    einzelnen Anfrage (die schaltet main() ab). Ueber diese Verbindung gehen
+    neben dem API-Key auch die zentrale Konfiguration mit WLAN-Passwoertern,
+    802.1X- und Portal-Zugangsdaten."""
+    url = str(server_cfg.get("url") or "")
+    if url.lower().startswith("http://"):
+        log.warning(
+            "server.url nutzt http:// - API-Key und zentrale Konfiguration (inkl. "
+            "WLAN-Passwoerter) gehen unverschluesselt uebers Netz. Nur in einem "
+            "abgeschotteten Testnetz verwenden."
+        )
+    elif server_cfg.get("verify_tls", True) is False:
+        log.warning(
+            "server.verify_tls ist false - das Server-Zertifikat wird nicht geprueft, "
+            "wer sich ins Netz einklinkt, kann API-Key und WLAN-Passwoerter mitlesen. "
+            "Besser verify_tls auf die CA-Datei des Servers zeigen lassen."
+        )
 
 
 def _now_iso() -> str:
@@ -531,6 +554,11 @@ def main() -> None:
 
     bootstrap_cfg = load_bootstrap(args.config)
     setup_logging(bootstrap_cfg.get("logging", {}))
+    # verify=False (verify_tls: false, Portal-Ziele per IP in bound_http.py)
+    # ist immer bewusst gewaehlt - statt einer urllib3-Warnung pro Anfrage im
+    # Journal warnt warn_insecure_server() einmal beim Start.
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    warn_insecure_server(bootstrap_cfg.get("server") or {})
     _wait_for_ntp_sync()
     cfg = resolve_initial_config(bootstrap_cfg)
     ensure_regdomain(_country(cfg))

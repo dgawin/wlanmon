@@ -24,7 +24,12 @@ server:
   url: "https://wlanmon.example.com/api/v1"
   # API-Key für dieses Gerät (vom Server beim Onboarding vergeben)
   api_key: "CHANGE-ME"
-  # TLS-Zertifikatsprüfung. Im Feldeinsatz nur mit gutem Grund deaktivieren.
+  # TLS-Zertifikatsprüfung: true = gegen die System-CAs prüfen,
+  # "/pfad/zur/ca.crt" = dieser CA vertrauen (empfohlen bei internen Servern
+  # mit eigener CA), false = nicht prüfen (selbstsigniert, Warnung im Log).
+  # Mit einer http://-URL oben gibt es gar kein TLS - nur im Testnetz, die
+  # zentrale Konfiguration enthält WLAN-Passwörter. Siehe README, "Server
+  # connection & TLS".
   verify_tls: true
   # Timeout pro HTTP-Request in Sekunden
   request_timeout: 10

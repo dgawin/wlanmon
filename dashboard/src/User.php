@@ -177,10 +177,28 @@ function invite_consume(array $invite, string $password): void
     $stmt->execute([$invite['token_hash']]);
 }
 
+/**
+ * Basis-URL, unter der das Dashboard gerade aufgerufen wird (z.B.
+ * "https://wlanmon.example.com"), für Einladungslinks und den
+ * Konfig-Ausschnitt neuer Geräte. Das Schema kommt aus der Anfrage statt fest
+ * "https://", damit auch Installationen ohne TLS passende Links bekommen;
+ * hinter einem TLS-Proxy zählt zusätzlich X-Forwarded-Proto (im Docker-Betrieb
+ * setzt docker/apache-vhost.conf das ohnehin in HTTPS=on um). Ohne Anfrage
+ * (CLI) bleibt es beim bisherigen https-Platzhalter.
+ */
+function request_base_url(): string
+{
+    if (!isset($_SERVER['HTTP_HOST'])) {
+        return 'https://wlanmon.example.com';
+    }
+    $https = (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off')
+        || strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
+    return ($https ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'];
+}
+
 function invite_url(string $token): string
 {
-    $host = $_SERVER['HTTP_HOST'] ?? 'wlanmon.example.com';
-    return "https://{$host}/invite/{$token}";
+    return request_base_url() . "/invite/{$token}";
 }
 
 /**

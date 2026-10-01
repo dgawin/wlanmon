@@ -32,7 +32,7 @@ $rotated ??= false;
 
 <p><?= teh('Passender Ausschnitt für %s:', '<code>/etc/wlanmon-probe/config.yaml</code>') ?></p>
 <pre><code>server:
-  url: "https://<?= e($_SERVER['HTTP_HOST'] ?? 'wlanmon.example.com') ?>/api/v1"
+  url: "<?= e(request_base_url()) ?>/api/v1"
   api_key: "<?= e($apiKey) ?>"
   verify_tls: true</code></pre>
 

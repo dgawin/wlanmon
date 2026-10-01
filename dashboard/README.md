@@ -85,12 +85,13 @@ next start of `web`, `docker/init_db.php` adds any missing columns.
 
 ## Requirements
 
-- Apache with `mod_rewrite` (for the `.htaccess` routes) and `mod_php`
-  **or** PHP-FPM + `mod_proxy_fcgi`
-- PHP ≥ 7.4 (tested with 8.3) with the `pdo_mysql` extension
+- A web server with PHP ≥ 7.4 (tested with 8.3) and the `pdo_mysql`
+  extension; with Apache, `mod_rewrite` and `AllowOverride All` for the
+  bundled `.htaccess`
 - MySQL ≥ 5.7 or MariaDB ≥ 10.2
-- A DNS record `wlanmon.example.com` → server IP
-- A TLS certificate (e.g. via `certbot`)
+- HTTPS is strongly recommended – the probes fetch their configuration
+  including Wi-Fi passwords from the dashboard (see "Server connection & TLS"
+  in the [probe README](../probe/README.md#server-connection--tls))
 
 ## Project structure
 
@@ -129,89 +130,40 @@ src/                  -> outside public/, not directly reachable
   templates/dashboard.php, templates/device_detail.php, templates/settings_alerting.php
 ```
 
-Important: **the vhost's `DocumentRoot` must point to `public/`**, not to
-the project root – otherwise `config.php` and the `src/` files could in
-theory be fetched directly through the browser.
-
 ## Installation
 
-### 1. Copy the files to the server
+Setting up the web server, the vhost and a TLS certificate is not covered
+here – use whatever your environment provides. What wlanmon needs:
 
-```bash
-# e.g. to /var/www/wlanmon
-sudo mkdir -p /var/www/wlanmon
-# upload and unpack the ZIP there, or use git clone
-cd /var/www/wlanmon
-cp config.example.php config.php
-nano config.php   # enter the DB credentials. 'admin' in there is ONLY for
-                  # the /api/v1/admin/* endpoints (curl automation) -
-                  # the web login uses real user accounts, see step 6
-                  # and "Users & roles".
-```
+1. **Copy the files** to the server, e.g. `/var/www/wlanmon` (ZIP or
+   `git clone`).
+2. **Point the vhost's DocumentRoot to `public/`**, not to the project root –
+   otherwise `config.php` (with the credentials) and `src/` could be fetched
+   through the browser.
+3. **Create the database** and import the schema:
 
-### 2. Create the MySQL database
+   ```sql
+   CREATE DATABASE wlanmon CHARACTER SET utf8mb4;
+   CREATE USER 'wlanmon'@'localhost' IDENTIFIED BY '<long random password>';
+   GRANT ALL PRIVILEGES ON wlanmon.* TO 'wlanmon'@'localhost';
+   ```
 
-```bash
-sudo mysql -u root -p << 'SQL'
-CREATE DATABASE wlanmon CHARACTER SET utf8mb4;
-CREATE USER 'wlanmon'@'localhost' IDENTIFIED BY 'LONG-RANDOM-PASSWORD-HERE';
-GRANT ALL PRIVILEGES ON wlanmon.* TO 'wlanmon'@'localhost';
-FLUSH PRIVILEGES;
-SQL
+   ```bash
+   mysql -u wlanmon -p wlanmon < schema.sql
+   ```
 
-mysql -u wlanmon -p wlanmon < schema.sql
-```
+4. **Create `config.php`** from `config.example.php` and enter the DB
+   credentials. Keep it readable for the PHP user only (`chmod 600`). The
+   `admin` block in there is **only** for the `/api/v1/admin/*` endpoints
+   (curl automation) – the web login uses real user accounts.
+5. **Create the first admin account** for the web login:
 
-Enter the same password in `config.php`.
+   ```bash
+   php create_admin.php <username> <email> <password>
+   ```
 
-### 3. Set up the Apache vhost
-
-```apache
-<VirtualHost *:80>
-    ServerName wlanmon.example.com
-    DocumentRoot /var/www/wlanmon/public
-
-    <Directory /var/www/wlanmon/public>
-        AllowOverride All
-        Require all granted
-    </Directory>
-</VirtualHost>
-```
-
-```bash
-sudo a2enmod rewrite
-sudo a2ensite wlanmon
-sudo systemctl reload apache2
-```
-
-`AllowOverride All` is required so the bundled `.htaccess` (routing +
-passing through the Authorization header) takes effect.
-
-### 4. Set up TLS (certbot)
-
-```bash
-sudo certbot --apache -d wlanmon.example.com
-```
-
-The dashboard is then available at `https://wlanmon.example.com/` and the
-API at `https://wlanmon.example.com/api/v1/...`.
-
-### 5. File permissions
-
-```bash
-sudo chown -R www-data:www-data /var/www/wlanmon
-sudo chmod 640 /var/www/wlanmon/config.php
-```
-
-### 6. Create the first admin account for the web login
-
-```bash
-php create_admin.php <username> <email> <password>
-```
-
-Then log in at `https://wlanmon.example.com/login`. Further users (roles
-admin/user/viewer) are invited through the web UI under `/users`, see
-"Users & roles".
+   Then log in at `/login`. Further users (roles admin/user/viewer) are
+   invited through the web UI under `/users`, see "Users & roles".
 
 ## Users & roles
 
@@ -390,6 +342,10 @@ server:
   api_key: "<paste here>"
   verify_tls: true
 ```
+
+The dashboard also shows this snippet after creating a device, with the URL
+it is currently reached at. For internal servers with their own CA or
+without HTTPS, see "Server connection & TLS" in the probe README.
 
 ## Optional: setting a central configuration for a device
 

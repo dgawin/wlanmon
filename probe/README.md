@@ -97,6 +97,24 @@ sudo systemctl enable --now wlanmon-probe
 sudo journalctl -u wlanmon-probe -f
 ```
 
+## Server connection & TLS
+
+`server.url` and `server.verify_tls` in `config.yaml` control how the probe
+talks to the dashboard. Besides the measurements, this connection carries the
+API key and – with `remote_config` – the central configuration including
+**Wi-Fi passwords (PSKs), 802.1X and portal credentials**. Choose the
+weakest option only if a stronger one is not possible:
+
+| Setting | When |
+|---|---|
+| `verify_tls: true` (default) | the server has a certificate from a public CA (e.g. Let's Encrypt) |
+| `verify_tls: "/etc/wlanmon-probe/ca.crt"` | **recommended for internal servers:** trust exactly this CA (e.g. the internal CA of the dashboard's Docker setup, see the dashboard README) |
+| `verify_tls: false` | self-signed certificate without a CA file: encrypted, but the server is not verified – anyone who can intercept the traffic can read the credentials |
+| `url: "http://..."` | no encryption at all – only in an isolated test network |
+
+With `verify_tls: false` or an `http://` URL, the probe logs one warning on
+startup.
+
 ## Toolbox (`sudo wlanmon`)
 
 A menu for the commands you keep needing on a probe:
