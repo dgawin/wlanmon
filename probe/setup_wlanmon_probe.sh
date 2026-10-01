@@ -169,9 +169,13 @@ I2C_JUST_SET=0
 
 ensure_i2c0_overlay() {
     [ -f "$ARMBIAN_ENV" ] || return
-    local prefix
+    local prefix found
     prefix=$(sed -n 's/^overlay_prefix=//p' "$ARMBIAN_ENV" | head -n1)
-    if [ -z "$prefix" ] || ! ls /boot/dtb/*/overlay/"$prefix"-i2c0.dtbo /boot/dtb/overlay/"$prefix"-i2c0.dtbo >/dev/null 2>&1; then
+    # Ausgabe statt Exitcode von ls auswerten: ls meldet einen Fehler, sobald
+    # EINER der Pfade fehlt - beim NanoPi NEO2 liegt das Overlay nur unter
+    # /boot/dtb/allwinner/overlay/, nicht unter /boot/dtb/overlay/.
+    found=$( { [ -n "$prefix" ] && ls /boot/dtb/*/overlay/"$prefix"-i2c0.dtbo /boot/dtb/overlay/"$prefix"-i2c0.dtbo 2>/dev/null; } | head -n1 ) || true
+    if [ -z "$found" ]; then
         log "Kein I2C0-Overlay fuer dieses Board gefunden - ueberspringe (nur fuer das NanoHat-OLED noetig)."
         return
     fi
