@@ -39,7 +39,7 @@ for arg in "$@"; do
 done
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Bitte mit sudo/root ausfuehren." >&2
+    echo "Please run with sudo/as root." >&2
     exit 1
 fi
 
@@ -52,15 +52,15 @@ log() { echo "[setup_wlanmon_probe] $*"; }
 remove_wlan_from_ifplugd() {
     local cfg="/etc/default/ifplugd"
     if [ ! -f "$cfg" ]; then
-        log "ifplugd-Konfiguration ($cfg) nicht vorhanden - ueberspringe."
+        log "No ifplugd configuration ($cfg) - skipping."
         return
     fi
     if ! grep -q 'HOTPLUG_INTERFACES=.*wlan' "$cfg"; then
-        log "ifplugd ueberwacht laut $cfg kein WLAN-Interface - keine Aenderung noetig."
+        log "ifplugd does not manage a Wi-Fi interface ($cfg) - nothing to change."
         return
     fi
 
-    log "Entferne wlan0/wlan1 aus ifplugds HOTPLUG_INTERFACES in $cfg ..."
+    log "Removing wlan0/wlan1 from ifplugd HOTPLUG_INTERFACES in $cfg ..."
     cp "$cfg" "$cfg.bak.$(date +%Y%m%d%H%M%S)"
     # Nur wlan*-Eintraege aus der Liste entfernen, eth-Interfaces bleiben
     # unangetastet - ifplugd soll fuer Kabel-Link-Erkennung weiterlaufen,
@@ -80,17 +80,17 @@ content = re.sub(r'HOTPLUG_INTERFACES="([^"]*)"', strip_wlan, content)
 with open(path, "w") as f:
     f.write(content)
 PYEOF
-    log "Neuer Inhalt: $(grep HOTPLUG_INTERFACES "$cfg")"
+    log "New value: $(grep HOTPLUG_INTERFACES "$cfg")"
 
     if systemctl list-unit-files ifplugd.service 2>/dev/null | grep -q '^ifplugd.service'; then
-        log "Starte ifplugd.service neu, damit die neue Interface-Liste greift ..."
+        log "Restarting ifplugd.service so the new interface list takes effect ..."
         systemctl restart ifplugd.service 2>/dev/null || true
     fi
 }
 
 setup_arp_flux_sysctls() {
     local cfg="/etc/sysctl.d/99-wlanmon-probe.conf"
-    log "Setze ARP-Flux-Sysctls (${cfg}) ..."
+    log "Setting ARP flux sysctls (${cfg}) ..."
     cat > "$cfg" <<'EOF'
 # wlanmon-probe: verhindert "ARP Flux", falls eth0 (Management-Uplink)
 # und das per wlan0 getestete WLAN im selben Subnetz haengen - ohne das
@@ -105,9 +105,9 @@ EOF
 }
 
 if [ "$SKIP_FOUNDATION_CLEANUP" -eq 1 ]; then
-    log "--skip-foundation-cleanup gesetzt - ifplugd und ARP-Sysctls werden nicht angefasst."
+    log "--skip-foundation-cleanup set - leaving ifplugd and ARP sysctls untouched."
 else
-    log "=== Schritt 1: Konflikte mit der WLAN-Steuerung vermeiden ==="
+    log "=== Step 1: avoid conflicts with the Wi-Fi control ==="
     remove_wlan_from_ifplugd
     setup_arp_flux_sysctls
 fi
@@ -126,11 +126,11 @@ IFNAMES_JUST_SET=0
 
 ensure_net_ifnames_disabled() {
     if [ ! -f "$ARMBIAN_ENV" ]; then
-        log "$ARMBIAN_ENV nicht gefunden - ueberspringe net.ifnames-Anpassung (kein Armbian-Bootsetup erkannt, ggf. manuell pruefen)."
+        log "$ARMBIAN_ENV not found - skipping net.ifnames (no Armbian boot setup; Raspberry Pi OS already uses wlan0/eth0)."
         return
     fi
     if grep -q 'net\.ifnames=0' "$ARMBIAN_ENV"; then
-        log "net.ifnames=0 ist bereits gesetzt."
+        log "net.ifnames=0 is already set."
         return
     fi
 
@@ -155,7 +155,7 @@ else:
 with open(path, 'w') as f:
     f.writelines(lines)
 PYEOF
-    log "net.ifnames=0 zu $ARMBIAN_ENV hinzugefuegt (klassische Namen wie wlan0/eth0 statt wlx<mac>) - wirkt erst nach Reboot."
+    log "Added net.ifnames=0 to $ARMBIAN_ENV (classic names like wlan0/eth0 instead of wlx<mac>) - takes effect after a reboot."
     IFNAMES_JUST_SET=1
 }
 
@@ -179,11 +179,11 @@ ensure_i2c0_overlay() {
     # /boot/dtb/allwinner/overlay/, nicht unter /boot/dtb/overlay/.
     found=$( { [ -n "$prefix" ] && ls /boot/dtb/*/overlay/"$prefix"-i2c0.dtbo /boot/dtb/overlay/"$prefix"-i2c0.dtbo 2>/dev/null; } | head -n1 ) || true
     if [ -z "$found" ]; then
-        log "Kein I2C0-Overlay fuer dieses Board gefunden - ueberspringe (nur fuer das NanoHat-OLED noetig)."
+        log "No I2C0 overlay for this board - skipping (only needed for the NanoHat OLED)."
         return
     fi
     if grep -Eq '^overlays=(.*[[:space:]])?i2c0([[:space:]]|$)' "$ARMBIAN_ENV"; then
-        log "I2C0-Overlay ist bereits aktiv."
+        log "I2C0 overlay is already enabled."
         return
     fi
     cp "$ARMBIAN_ENV" "$ARMBIAN_ENV.bak.$(date +%Y%m%d%H%M%S)"
@@ -192,11 +192,11 @@ ensure_i2c0_overlay() {
     else
         echo "overlays=i2c0" >> "$ARMBIAN_ENV"
     fi
-    log "I2C0-Overlay in $ARMBIAN_ENV aktiviert (NanoHat-OLED) - wirkt erst nach Reboot."
+    log "Enabled the I2C0 overlay in $ARMBIAN_ENV (NanoHat OLED) - takes effect after a reboot."
     I2C_JUST_SET=1
 }
 
-log "=== Schritt 1.5: klassische Interface-Namen erzwingen, I2C fuer das OLED ==="
+log "=== Step 1.5: classic interface names, I2C for the OLED ==="
 ensure_net_ifnames_disabled
 ensure_i2c0_overlay
 
@@ -204,7 +204,7 @@ ensure_i2c0_overlay
 # 2. wlanmon-probe installieren
 # ---------------------------------------------------------------------
 
-log "=== Schritt 2: wlanmon-probe installieren ==="
+log "=== Step 2: install wlanmon-probe ==="
 
 INSTALL_DIR="/opt/wlanmon-probe"
 CONFIG_DIR="/etc/wlanmon-probe"
@@ -248,22 +248,22 @@ command -v tcpdump >/dev/null 2>&1 || PKGS+=(tcpdump)
 # Fehlermeldung) - daher vorher pruefen.
 python3 -c "import ensurepip" >/dev/null 2>&1 || PKGS+=(python3-venv)
 if [ "${#PKGS[@]}" -gt 0 ]; then
-    log "Installiere Pakete: ${PKGS[*]} ..."
+    log "Installing packages: ${PKGS[*]} ..."
     # noninteractive: iperf3 fragt sonst per debconf, ob es als Dienst laufen
     # soll (Standard: nein - die Probe ist nur Client).
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PKGS[@]}"
 else
-    log "Alle benoetigten Pakete vorhanden."
+    log "All required packages are installed."
 fi
 # Raspberry Pi OS + dhclient: Connection-Tests scheitern dort mit DHCPDECLINE
 # direkt nach dem DHCPACK (README, Abschnitt Voraussetzungen). Die Probe nimmt
 # dhclient bevorzugt, wenn er da ist - daher nur warnen, nicht eigenmaechtig
 # ein Systempaket entfernen.
 if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null && command -v dhclient >/dev/null 2>&1; then
-    log "WARNUNG: dhclient auf einem Raspberry Pi - Connection-Tests scheitern damit (DHCPDECLINE)."
-    log "         Entfernen, die Probe nutzt dann dhcpcd: sudo apt remove -y isc-dhcp-client"
-    command -v dhcpcd >/dev/null 2>&1 || log "         Vorher dhcpcd installieren: sudo apt install -y dhcpcd-base"
+    log "WARNING: dhclient on a Raspberry Pi - connection tests fail with it (DHCPDECLINE)."
+    log "         Remove it, the probe then uses dhcpcd: sudo apt remove -y isc-dhcp-client"
+    command -v dhcpcd >/dev/null 2>&1 || log "         Install dhcpcd first: sudo apt install -y dhcpcd-base"
 fi
 
 # Debian/Ubuntu ab Python 3.11 verweigern system-weite "pip install"
@@ -271,7 +271,7 @@ fi
 # --break-system-packages, das laesst das System-Python unangetastet.
 VENV_DIR="$INSTALL_DIR/venv"
 if [ ! -d "$VENV_DIR" ]; then
-    log "Lege Python-venv unter $VENV_DIR an ..."
+    log "Creating Python venv in $VENV_DIR ..."
     python3 -m venv "$VENV_DIR"
 fi
 
@@ -288,9 +288,9 @@ if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
     # dem aus dieses Skript laeuft - im Normalfall genau der richtige Pfad.
     # Nur bei einer frischen Config, nie bei einer bestehenden anfassen.
     sed -i "s#^\(\s*repo_dir:\).*#\1 \"$SCRIPT_DIR\"#" "$CONFIG_DIR/config.yaml"
-    log "$CONFIG_DIR/config.yaml aus Vorlage angelegt."
+    log "Created $CONFIG_DIR/config.yaml from the template."
 else
-    log "$CONFIG_DIR/config.yaml existiert bereits - Werte bleiben, bis der Assistent sie aendert."
+    log "$CONFIG_DIR/config.yaml already exists - values stay until the wizard changes them."
 fi
 
 cp "$SCRIPT_DIR/wlanmon-probe.service" /etc/systemd/system/wlanmon-probe.service
@@ -323,56 +323,56 @@ ln -sf "$SCRIPT_DIR/wlanmon-tool.sh" /usr/local/bin/wlanmon
 
 WIZARD_DONE=0
 run_wizard() {
-    log "=== Schritt 3: Einrichtungsassistent ==="
+    log "=== Step 3: setup wizard ==="
     if "$VENV_DIR/bin/python3" "$SCRIPT_DIR/config_wizard.py" "$CONFIG_DIR/config.yaml"; then
         WIZARD_DONE=1
     else
-        log "Assistent nicht abgeschlossen - spaeter erneut mit: sudo wlanmon setup"
+        log "Wizard not completed - run it again later with: sudo wlanmon setup"
     fi
 }
 
 if [ "$WIZARD" != "no" ] && [ -t 0 ] && [ -t 1 ]; then
     if [ "$IFNAMES_JUST_SET" -eq 1 ]; then
-        log "Einrichtungsassistent folgt nach dem Neustart (Interface-Namen aendern sich noch)."
+        log "The setup wizard follows after the reboot (interface names are about to change)."
     elif [ "$WIZARD" = "yes" ] || [ "$CONFIG_IS_NEW" -eq 1 ]; then
         run_wizard
     else
-        read -r -p "[setup_wlanmon_probe] Konfiguration mit dem Assistenten anpassen? [j/N] " answer || answer=""
+        read -r -p "[setup_wlanmon_probe] Adjust the configuration with the wizard? [y/N] " answer || answer=""
         case "$answer" in j|J|y|Y) run_wizard ;; esac
     fi
 fi
 
 log ""
-log "Installation abgeschlossen."
+log "Installation complete."
 if [ "$I2C_JUST_SET" -eq 1 ] && [ "$IFNAMES_JUST_SET" -eq 0 ]; then
     # Beim Erstlauf deckt der Reboot-Hinweis unten das schon ab.
-    log "Hinweis: Das OLED-Display (I2C) laeuft erst nach einem Neustart (sudo reboot)."
+    log "Note: the OLED display (I2C) only works after a reboot (sudo reboot)."
 fi
 if [ "$IFNAMES_JUST_SET" -eq 1 ]; then
     log ""
-    log "ACHTUNG: net.ifnames=0 wurde gerade gesetzt und wirkt erst nach einem"
-    log "Neustart (danach heissen USB-Adapter wlan0/wlan1 statt wlx<mac>)."
+    log "IMPORTANT: net.ifnames=0 was just set and only takes effect after a"
+    log "reboot (USB adapters are then called wlan0/wlan1 instead of wlx<mac>)."
     log "  1. sudo reboot"
-    log "  2. sudo wlanmon setup    (Einrichtungsassistent)"
+    log "  2. sudo wlanmon setup    (setup wizard)"
 elif [ "$WIZARD_DONE" -eq 1 ]; then
     start_now="j"
     if [ -t 0 ]; then
-        read -r -p "[setup_wlanmon_probe] Probe jetzt (neu) starten? [J/n] " start_now || start_now="n"
+        read -r -p "[setup_wlanmon_probe] (Re)start the probe now? [Y/n] " start_now || start_now="n"
     fi
     case "${start_now:-j}" in
         j|J|y|Y)
             systemctl restart wlanmon-probe
-            log "Probe gestartet. Erste Messungen erscheinen nach etwa einer Minute im Dashboard." ;;
-        *) log "Starten mit: sudo systemctl start wlanmon-probe" ;;
+            log "Probe started. First measurements appear in the dashboard after about a minute." ;;
+        *) log "Start it with: sudo systemctl start wlanmon-probe" ;;
     esac
 else
-    log "Noch einzurichten: sudo wlanmon setup   (Assistent fuer $CONFIG_DIR/config.yaml)"
-    log "Danach starten mit: sudo systemctl start wlanmon-probe"
+    log "Still to do: sudo wlanmon setup   (wizard for $CONFIG_DIR/config.yaml)"
+    log "Then start it with: sudo systemctl start wlanmon-probe"
     WLAN_IFACES=$(ip -br link show 2>/dev/null | awk '{print $1}' | grep -E '^(wlan|wlx)' || true)
     if [ -z "$WLAN_IFACES" ]; then
-        log "Hinweis: kein WLAN-Interface gefunden - USB-WLAN-Adapter gesteckt? ('dmesg | grep -i usb')"
+        log "Note: no Wi-Fi interface found - is the USB Wi-Fi adapter plugged in? ('dmesg | grep -i usb')"
     fi
 fi
 log ""
-log "Logs verfolgen mit: sudo journalctl -u wlanmon-probe -f"
-log "Werkzeugkasten:     sudo wlanmon   (Logs, Dienste, Update, WLAN-Diagnose, Einrichtung)"
+log "Follow the logs:  sudo journalctl -u wlanmon-probe -f"
+log "Toolbox:          sudo wlanmon   (logs, services, update, Wi-Fi diagnostics, setup)"

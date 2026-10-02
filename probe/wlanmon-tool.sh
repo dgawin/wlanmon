@@ -82,9 +82,13 @@ except Exception:
 PYEOF
 }
 
+# Git-Checkout direkt in $1 oder eine Ebene hoeher - im gemeinsamen Repo
+# liegt die Probe im Unterordner probe/ (wie in update_probe.py akzeptiert).
+is_checkout() { [ -e "$1/.git" ] || [ -e "$1/../.git" ]; }
+
 IFACE="$(cfg interface.name wlan0)"
 REPO_DIR="$(cfg auto_update.repo_dir "$REPO_DIR_SELF")"
-[ -d "$REPO_DIR/.git" ] || REPO_DIR="$REPO_DIR_SELF"
+is_checkout "$REPO_DIR" || REPO_DIR="$REPO_DIR_SELF"
 
 # Print YAML/JSON with secrets (keys like api_key, psk, password ...) masked.
 show_masked() {
@@ -182,7 +186,7 @@ status_overview() {
     version="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "?")"
     echo "Device:         $(cfg device.id "$(hostname)")   (host $(hostname))"
     echo "Version:        installed $version, checkout $(cat "$REPO_DIR/VERSION" 2>/dev/null || echo "?")"
-    if [ -d "$REPO_DIR/.git" ]; then
+    if is_checkout "$REPO_DIR"; then
         branch="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)"
         commit="$(git -C "$REPO_DIR" log -1 --format='%h %cd %s' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null)"
         echo "Git:            $REPO_DIR ($branch) $commit"
@@ -284,7 +288,7 @@ menu_update() {
             3)
                 echo "Installed ($INSTALL_DIR): $(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')"
                 echo "Checkout ($REPO_DIR):  $(cat "$REPO_DIR/VERSION" 2>/dev/null || echo '?')"
-                if [ -d "$REPO_DIR/.git" ]; then
+                if is_checkout "$REPO_DIR"; then
                     git -C "$REPO_DIR" log -3 --format='  %h %cd %s' --date=format:'%Y-%m-%d %H:%M'
                     info "Checking the server state (git fetch) ..."
                     if git -C "$REPO_DIR" fetch -q 2>/dev/null; then
