@@ -20,6 +20,8 @@ Use the Feature Request template. Describe the problem, your proposed solution a
 1. Open an issue to discuss significant changes.
 2. Fork the repository and create a feature branch.
 3. Make your changes and test them.
-4. Open a pull request against the stable branch with a clear description.
+4. Open a pull request against the `main` branch with a clear description.
+   (`stable` only receives released states from `main`; installations and
+   auto-updates pull from it.)
 
 Please do not commit credentials, API tokens or private network information.
