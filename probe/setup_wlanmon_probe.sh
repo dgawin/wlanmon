@@ -168,7 +168,10 @@ PYEOF
 I2C_JUST_SET=0
 
 ensure_i2c0_overlay() {
-    [ -f "$ARMBIAN_ENV" ] || return
+    # "return 0" statt nacktem "return": das uebernaehme den Exitcode des
+    # fehlgeschlagenen Tests, und set -e beendete dann das ganze Skript
+    # (2026-10-02 auf einem Raspberry Pi ohne armbianEnv.txt passiert).
+    [ -f "$ARMBIAN_ENV" ] || return 0
     local prefix found
     prefix=$(sed -n 's/^overlay_prefix=//p' "$ARMBIAN_ENV" | head -n1)
     # Ausgabe statt Exitcode von ls auswerten: ls meldet einen Fehler, sobald
@@ -252,6 +255,15 @@ if [ "${#PKGS[@]}" -gt 0 ]; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PKGS[@]}"
 else
     log "Alle benoetigten Pakete vorhanden."
+fi
+# Raspberry Pi OS + dhclient: Connection-Tests scheitern dort mit DHCPDECLINE
+# direkt nach dem DHCPACK (README, Abschnitt Voraussetzungen). Die Probe nimmt
+# dhclient bevorzugt, wenn er da ist - daher nur warnen, nicht eigenmaechtig
+# ein Systempaket entfernen.
+if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null && command -v dhclient >/dev/null 2>&1; then
+    log "WARNUNG: dhclient auf einem Raspberry Pi - Connection-Tests scheitern damit (DHCPDECLINE)."
+    log "         Entfernen, die Probe nutzt dann dhcpcd: sudo apt remove -y isc-dhcp-client"
+    command -v dhcpcd >/dev/null 2>&1 || log "         Vorher dhcpcd installieren: sudo apt install -y dhcpcd-base"
 fi
 
 # Debian/Ubuntu ab Python 3.11 verweigern system-weite "pip install"
