@@ -44,11 +44,13 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _run(cmd: list[str], timeout: int = 20, check: bool = True) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list[str], timeout: int = 20, check: bool = True, env: dict | None = None
+) -> subprocess.CompletedProcess:
     log.debug("exec: %s", " ".join(cmd))
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
+            cmd, capture_output=True, text=True, timeout=timeout, env=env
         )
     except FileNotFoundError as exc:
         # Faellt an, wenn das Programm selbst fehlt (z.B. dhclient auf
@@ -1620,6 +1622,47 @@ def _dhclient_lease_file(interface: str) -> str:
     return f"/tmp/wlanmon-probe-dhclient-{interface}.leases"
 
 
+# Metrik fuer alle Routen ueber das Test-Interface. Der DHCP-Client traegt
+# waehrend eines Tests eine Default-Route (und im selben Subnetz eine
+# Netz-Route) ueber wlan0 ein - bei dhclient ohne Metrik, also VOR eth0
+# (NetworkManager meist 100). Dann lief kurz ALLES ueber das Test-WLAN, und
+# beim Abbau des Tests rissen fremde Verbindungen ab: 2026-10-02 hing so das
+# Auto-Update (git ueber SSH) bis zum Timeout. Mit hoher Metrik bleibt eth0
+# der normale Weg; die Tests selbst sind an wlan0 gebunden (ping -I, iperf3
+# -B/--bind-dev, bound_http per SO_BINDTODEVICE) und nutzen die WLAN-Routen
+# trotzdem.
+WLAN_ROUTE_METRIC = 2000
+
+
+def _demote_routes(interface: str) -> None:
+    """Routen ueber interface mit kleinerer Metrik als WLAN_ROUTE_METRIC
+    durch dieselbe Route mit WLAN_ROUTE_METRIC ersetzen (erst hinzufuegen,
+    dann die alte loeschen - keine Luecke). Sicherheitsnetz fuer Clients, die
+    die Metrik nicht selbst setzen (aeltere dhclient-script-Versionen, die
+    Netz-Route der Adresse, die der Kernel mit Metrik 0 anlegt)."""
+    res = _run(["ip", "-4", "-j", "route", "show", "dev", interface], check=False)
+    try:
+        routes = json.loads(res.stdout or "[]")
+    except ValueError:
+        return
+    for route in routes:
+        metric = int(route.get("metric", 0))
+        if metric >= WLAN_ROUTE_METRIC or "dst" not in route:
+            continue
+        spec = [route["dst"]]
+        if route.get("gateway"):
+            spec += ["via", route["gateway"]]
+        spec += ["dev", interface]
+        for key, arg in (("protocol", "proto"), ("scope", "scope"), ("prefsrc", "src")):
+            if route.get(key):
+                spec += [arg, str(route[key])]
+        add = _run(["ip", "-4", "route", "add", *spec, "metric", str(WLAN_ROUTE_METRIC)], check=False)
+        if add.returncode == 0:
+            _run(["ip", "-4", "route", "del", *spec, "metric", str(metric)], check=False)
+        else:
+            log.debug("Route %s nicht umstellbar: %s", " ".join(spec), add.stderr.strip())
+
+
 def _run_dhcp(interface: str, timeout: int) -> str | None:
     # dhclient bevorzugt (weit verbreitet auf Armbian/Debian-Images).
     dhcp_bin = "dhclient" if shutil.which("dhclient") else "dhcpcd"
@@ -1645,7 +1688,10 @@ def _run_dhcp(interface: str, timeout: int) -> str | None:
             # dasselbe Lease-File fuer den "-r"-Aufruf.
             lease_file = _dhclient_lease_file(interface)
             Path(lease_file).write_text("")
-            _run(["dhclient", "-1", "-lf", lease_file, interface], timeout=timeout + 5)
+            # IF_METRIC wertet Debians dhclient-script fuer die Default-Route
+            # aus (siehe WLAN_ROUTE_METRIC); den Rest erledigt _demote_routes().
+            _run(["dhclient", "-1", "-lf", lease_file, interface], timeout=timeout + 5,
+                 env={**os.environ, "IF_METRIC": str(WLAN_ROUTE_METRIC)})
         else:
             # "-L"/"--noipv4ll": dhcpcd weicht ohne diese Option nach ein
             # paar Sekunden ohne DHCP-Antwort auf eine selbst vergebene
@@ -1662,9 +1708,12 @@ def _run_dhcp(interface: str, timeout: int) -> str | None:
             # "-4": nur IPv4, ausgewertet wird ohnehin nur die IPv4-Adresse.
             # Achtung: eine "-4"-Instanz hat einen eigenen Steuer-Socket,
             # daher in _cleanup_connection() auch "-k" mit "-4".
-            _run(["dhcpcd", "-4", "-A", "-L", "-t", str(timeout), interface], timeout=timeout + 5)
+            # "-m": Metrik fuer alle Routen dieser Instanz (WLAN_ROUTE_METRIC).
+            _run(["dhcpcd", "-4", "-A", "-L", "-m", str(WLAN_ROUTE_METRIC), "-t", str(timeout), interface],
+                 timeout=timeout + 5)
     except (WifiOpsError, subprocess.TimeoutExpired):
         return None
+    _demote_routes(interface)
 
     result = _run(["ip", "-4", "-o", "addr", "show", "dev", interface], check=False)
     m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", result.stdout)
@@ -1822,6 +1871,13 @@ def _iperf3_supports_bind_dev() -> bool:
         except (OSError, subprocess.TimeoutExpired):
             _bind_dev_supported = False
         log.debug("iperf3 --bind-dev unterstuetzt: %s", _bind_dev_supported)
+        if not _bind_dev_supported:
+            # Ohne --bind-dev entscheidet die Routing-Tabelle - und dort hat
+            # das Test-WLAN bewusst die schlechtere Metrik (WLAN_ROUTE_METRIC).
+            log.warning(
+                "iperf3 ohne --bind-dev (aelter als 3.12): der WLAN-Durchsatz kann ueber "
+                "eth0 statt ueber das Test-WLAN laufen - iperf3 aktualisieren"
+            )
     return _bind_dev_supported
 
 

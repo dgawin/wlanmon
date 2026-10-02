@@ -2,7 +2,7 @@
 """
 Prueft, ob im lokalen Git-Checkout des Probe-Repos (auf origin/<branch>)
 eine neuere Version vorliegt, und installiert sie automatisch:
-git pull --ff-only -> Dateien nach /opt/wlanmon-probe/ kopieren -> pip
+git fetch + git merge --ff-only -> Dateien nach /opt/wlanmon-probe/ kopieren -> pip
 install (falls requirements.txt sich geaendert hat) -> systemctl restart
 wlanmon-probe.
 
@@ -11,7 +11,7 @@ Wird periodisch von wlanmon-probe-update.timer aufgerufen (Standard alle
 auto_update.enabled: true in /etc/wlanmon-probe/config.yaml steht - sonst
 sofortiger, folgenloser Exit. Macht nie einen destruktiven Schritt: bei
 einem Merge-Konflikt, lokalen Aenderungen im Checkout oder einem fehlenden/
-ungueltigen repo_dir wird nur geloggt und abgebrochen (git pull --ff-only
+ungueltigen repo_dir wird nur geloggt und abgebrochen (git merge --ff-only
 verweigert sich in diesen Faellen von selbst, statt etwas zu ueberschreiben).
 
 Sicherheitshinweis: Das ist automatische Codeausfuehrung auf einem Feld-
@@ -286,12 +286,14 @@ def main() -> int:
     pull = run(["git", "checkout", "--quiet", branch], cwd=repo_dir)
     if pull.returncode != 0:
         return fail(f"git checkout {branch} fehlgeschlagen: {pull.stderr.strip()}")
-    pull = run(
-        ["git", *GIT_NET_OPTS, "pull", "--ff-only", "origin", branch],
-        cwd=repo_dir, env=net_env,
-    )
+    # Merge auf den eben geholten Stand statt "git pull": kein zweiter
+    # Netzzugriff. Der lief sonst ein paar Sekunden nach dem fetch erneut
+    # zu GitHub - 2026-10-02 auf einem NEO3 genau in einen Connection-Test
+    # hinein (Default-Route kurz ueber wlan0), die Probe nahm wlan0 die
+    # Adresse weg und die SSH-Verbindung hing bis zum Timeout.
+    pull = run(["git", "merge", "--ff-only", "--quiet", remote], cwd=repo_dir)
     if pull.returncode != 0:
-        return fail(f"git pull --ff-only fehlgeschlagen, breche ab: {pull.stderr.strip()}")
+        return fail(f"git merge --ff-only fehlgeschlagen, breche ab: {pull.stderr.strip()}")
 
     sync_files(repo_dir)
     STATE.update(commit=remote[:8])
