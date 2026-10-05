@@ -246,11 +246,24 @@ def _link_up(interface: str) -> bool:
     return False
 
 
-def scan(interface: str, timeout: int = 30) -> list[ScanResult]:
-    """Führt einen aktiven Scan über `iw` durch und parst die Ergebnisse."""
+def scan(interface: str, timeout: int = 30, passes: int = 1) -> tuple[list[ScanResult], list[int]]:
+    """Führt `passes` aktive Scans über `iw` direkt hintereinander durch und
+    führt sie nach BSSID zusammen (bei mehrfach gesehenen gilt der neueste
+    Eintrag). Ein einzelner Scan verweilt nur kurz auf jedem Kanal und
+    verpasst je nach Beacon-Zeitpunkt und passiven (DFS-)Kanälen schnell ein
+    paar Netze - die Zahl gefundener Netze schwankte so von Scan zu Scan
+    stark. Die Verweildauer selbst (`iw scan duration`) unterstützen die
+    gängigen Treiber (mt7921u, brcmfmac) nicht. Liefert die Netze und die
+    Anzahl je Durchgang (zur Einordnung im Dashboard)."""
     _link_up(interface)
-    result = _scan_with_retry(interface, timeout)
-    return _parse_scan_output(result.stdout)
+    merged: dict[str, ScanResult] = {}
+    counts: list[int] = []
+    for _ in range(max(1, passes)):
+        found = _parse_scan_output(_scan_with_retry(interface, timeout).stdout)
+        counts.append(len(found))
+        for r in found:
+            merged[r.bssid] = r
+    return list(merged.values()), counts
 
 
 # Erste "country XX:"-Zeile von `iw reg get` = globale Einstellung.

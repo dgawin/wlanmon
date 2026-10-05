@@ -12,6 +12,9 @@ declare(strict_types=1);
  *     Connection-Tests dieser SSID waren allesamt nicht verbunden.
  *   - "auth_slow:<SSID>": die letzten consecutive_test_failures Tests mit
  *     802.1X-Zeit lagen alle ueber auth_slow_seconds (nur wenn gesetzt).
+ *   - "eap_abort_rate:<SSID>": im Zeitfenster eap_abort_window_minutes ist
+ *     mindestens eap_abort_rate_pct % der Tests an einer 802.1X-SSID
+ *     gescheitert, mind. EAP_ABORT_MIN_FAILURES (nur wenn gesetzt).
  * Bei einer NEUEN Stoerung wird sofort benachrichtigt (sofern gerade im
  * erlaubten Zeitfenster der Site); bleibt sie bestehen, erst wieder nach
  * repeat_after_minutes (kein Spam bei jedem Cron-Tick); klaert sie sich,
@@ -42,6 +45,9 @@ require_once __DIR__ . '/src/Alerting.php';
 require_once __DIR__ . '/src/Site.php';
 require_once __DIR__ . '/src/I18n.php';
 require_once __DIR__ . '/src/ProbeError.php';
+
+/** Mindestzahl Fehlschlaege fuer die Regel eap_abort_rate. */
+const EAP_ABORT_MIN_FAILURES = 3;
 
 function log_line(string $msg): void
 {
@@ -257,6 +263,71 @@ foreach (device_list() as $device) {
                 $deviceId, $site, (string) $ssid, count($values),
                 number_format($authSlowSeconds, 1), number_format($values[0], 1),
                 number_format(array_sum($values) / count($values), 1)),
+            $repeatAfterSeconds,
+            $siteChannels,
+            $notifyAllowed
+        );
+    }
+    // --- Regel "eap_abort_rate:<SSID>" ---
+    // Anteil fehlgeschlagener Tests an einer 802.1X-SSID im Zeitfenster. Fängt
+    // eine zeitweise hakende Anmeldung ab, die "ssid_failing" (alle letzten
+    // Tests gescheitert) nie erreicht. Mindestens EAP_ABORT_MIN_FAILURES
+    // Fehlschläge, damit ein einzelner Ausreißer bei wenigen Tests nichts
+    // auslöst. Entwarnung erst unter der halben Schwelle (kein Flattern um
+    // die Schwelle herum), dazwischen Zustand unverändert. Fällt die SSID
+    // gerade ganz aus, meldet das schon "ssid_failing" - dann hier nichts tun.
+    $abortRatePct = isset($siteAlerting['eap_abort_rate_pct']) ? (int) $siteAlerting['eap_abort_rate_pct'] : 0;
+    $abortWindow = min(1440, max(10, (int) ($siteAlerting['eap_abort_window_minutes'] ?? 60)));
+    $eapTests = [];
+    if ($abortRatePct > 0) {
+        $since = gmdate('Y-m-d H:i:s', time() - $abortWindow * 60);
+        foreach (measurement_list_since($deviceId, 'connection_test', $since) as $t) {
+            $data = json_decode((string) $t['data'], true) ?: [];
+            $isEap = !empty($data['eap_method']) || stripos((string) ($data['security'] ?? ''), 'eap') !== false;
+            if ($isEap && isset($data['ssid'])) {
+                $eapTests[(string) $data['ssid']][] = $data;
+            }
+        }
+    }
+    foreach (alert_active_rules_with_prefix($deviceId, 'eap_abort_rate:') as $openRule) {
+        // Regel abgeschaltet oder SSID nicht mehr getestet: still schließen.
+        if ($abortRatePct <= 0 || !isset($eapTests[substr($openRule, strlen('eap_abort_rate:'))])) {
+            $open = alert_find_active($deviceId, $openRule);
+            if ($open !== null) {
+                alert_resolve((int) $open['id']);
+            }
+        }
+    }
+    foreach ($eapTests as $ssid => $tests) {
+        $failed = array_values(array_filter($tests, fn(array $d): bool => empty($d['connected'])));
+        $total = count($tests);
+        $failures = count($failed);
+        $ratePct = $total > 0 ? 100 * $failures / $total : 0.0;
+        // Totalausfall (die letzten Tests alle gescheitert) meldet "ssid_failing".
+        $lastResults = $bySsid[$ssid] ?? [];
+        if (count($lastResults) >= $consecutiveFailures && !in_array(true, $lastResults, true)) {
+            continue;
+        }
+        $active = $failures >= EAP_ABORT_MIN_FAILURES && $ratePct >= $abortRatePct;
+        $cleared = $failures < EAP_ABORT_MIN_FAILURES || $ratePct < $abortRatePct / 2;
+        if (!$active && !$cleared) {
+            continue;
+        }
+        // Häufigste Fehlerursache in der Alarmsprache des Standorts.
+        $reasons = array_count_values(array_filter(array_map(fn(array $d): string => trim(probe_error_text($d)), $failed)));
+        arsort($reasons);
+        $topReason = (string) (array_key_first($reasons) ?? '');
+        $message = __('Gerät %s (Standort: %s): An SSID „%s“ sind in den letzten %d Minuten %d von %d Tests gescheitert (%d %%).',
+            $deviceId, $site, (string) $ssid, $abortWindow, $failures, $total, (int) round($ratePct));
+        if ($topReason !== '') {
+            $message .= "\n" . __('Häufigste Ursache (%d×): %s', $reasons[$topReason], $topReason);
+        }
+        handle_condition(
+            $deviceId,
+            'eap_abort_rate:' . $ssid,
+            $active,
+            __('WLANMON: %s – 802.1X an „%s“ bricht oft ab (%d %%)', $deviceId, (string) $ssid, (int) round($ratePct)),
+            $message,
             $repeatAfterSeconds,
             $siteChannels,
             $notifyAllowed

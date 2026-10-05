@@ -294,6 +294,12 @@ $renderTarget = function (string $idx, array $t) use ($securityOptions, $portalT
             <input type="number" min="1" name="scan_interval_seconds"
                    value="<?= e($config['scan']['interval_seconds'] ?? 60) ?>">
         </label>
+        <label>
+            <?= te('Scans je Durchlauf') ?>
+            <input type="number" min="1" max="5" name="scan_passes"
+                   value="<?= e($config['scan']['passes'] ?? 2) ?>">
+            <span class="muted"><?= te('Mehrere Scans direkt hintereinander, zusammengeführt. Ein einzelner Scan verpasst schnell ein paar Netze, die Anzahl schwankt dann stark; 2 glättet das und dauert nur wenige Sekunden länger. Ab Probe 1.0.1.61.') ?></span>
+        </label>
     </fieldset>
 
     <?php $hb = is_array($config['heartbeat'] ?? null) ? $config['heartbeat'] : []; ?>

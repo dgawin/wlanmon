@@ -272,8 +272,11 @@ journalctl -u wlanmon-probe-update -f
 
 ### Scans
 
-Every `scan.interval_seconds` the probe runs `iw dev <iface> scan` and records
-for each access point:
+Every `scan.interval_seconds` the probe runs `iw dev <iface> scan` – by default
+twice in a row (`scan.passes`, 1–5), merged by BSSID. A single scan spends only
+a moment on each channel and easily misses a few networks, so the count jumps
+from scan to scan; a second pass smooths that out. For each access point it
+records:
 
 - SSID, BSSID, signal, frequency and channel
 - Wi-Fi generation (4–7), channel width and the centre of the occupied

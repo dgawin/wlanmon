@@ -77,7 +77,8 @@ foreach ($tests as $t) {
 }
 
 /** Eine Tabellenzeile eines Connection-Tests (SSID-Tab). */
-$renderTestRow = function (array $t) use ($deviceUrl, $canWrite, $captureInfo): void {
+$cirrusAuthEnabled = cirrus_config() !== null;
+$renderTestRow = function (array $t) use ($deviceUrl, $canWrite, $captureInfo, $cirrusAuthEnabled): void {
     $d = json_decode((string) $t['data'], true) ?: [];
     $lkRow = is_array($d['link'] ?? null) ? $d['link'] : null;
     $connectedRow = !empty($d['connected']);
@@ -258,6 +259,15 @@ $renderTestRow = function (array $t) use ($deviceUrl, $canWrite, $captureInfo): 
                     <?php if (!empty($cap['has_wpa_log'])): ?>
                         <a href="<?= e($deviceUrl) ?>/captures/<?= e($d['capture_id']) ?>.log" title="<?= te('Log von wpa_supplicant: EAP-Methode, Server-Zertifikat, Abbruchgrund aus Sicht des Clients') ?>"><i class="fa-solid fa-file-code"></i> wpa_supplicant</a>
                     <?php endif; ?>
+                </span>
+            <?php endif; ?>
+            <?php
+            // 802.1X fehlgeschlagen: Anmeldeversuche aus Cirrus nachladen (src/CirrusAuth.php).
+            $isEap = !empty($d['eap_method']) || stripos((string) ($d['security'] ?? ''), 'eap') !== false;
+            if ($cirrusAuthEnabled && $canWrite && !$connectedRow && $isEap): ?>
+                <span class="capture-links">
+                    <a href="<?= e($deviceUrl) ?>/measurements/<?= (int) $t['id'] ?>/cirrus-auth" class="cirrus-auth-link"
+                       title="<?= te('Anmeldeversuche dieser MAC rund um den Test aus der Authentifizierungs-Historie von OmniVista Cirrus') ?>"><i class="fa-solid fa-cloud"></i> <?= te('Cirrus-Anmeldung') ?></a>
                 </span>
             <?php endif; ?>
         </td>
@@ -1221,6 +1231,24 @@ tabInit['system'] = function () {
     <p class="muted timeline-empty" id="timelineLatencyEmpty" hidden><?= te('Keine Latenzwerte im Zeitraum.') ?></p>
 </div>
 <p class="muted chart-label" id="timelineStatus"></p>
+<script>
+// "Cirrus-Anmeldung" in der Fehlerspalte: Ergebnis einmal nachladen und unter dem Link einsetzen.
+document.addEventListener('click', function (ev) {
+    var link = ev.target.closest('a.cirrus-auth-link');
+    if (!link) { return; }
+    ev.preventDefault();
+    var box = link.parentNode.nextElementSibling;
+    if (box && box.classList.contains('cirrus-auth-box')) { box.hidden = !box.hidden; return; }
+    box = document.createElement('div');
+    box.className = 'cirrus-auth-box';
+    box.textContent = <?= tjson('Frage Cirrus ab …') ?>;
+    link.parentNode.after(box);
+    fetch(link.href, {credentials: 'same-origin'})
+        .then(function (r) { return r.text(); })
+        .then(function (html) { box.innerHTML = html; })
+        .catch(function () { box.textContent = <?= tjson('Abfrage fehlgeschlagen.') ?>; });
+});
+</script>
 <script src="/static/timeline.js"></script>
 <script>
 // Erst beim Öffnen des Tabs laden und zeichnen (JSON von /devices/<id>/timeline).

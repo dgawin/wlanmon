@@ -267,16 +267,36 @@ def smoke_test() -> str | None:
     return lines[-1] if lines else f"Exitcode {res.returncode}"
 
 
+def version_tuple(path: Path) -> tuple[int, ...] | None:
+    """VERSION-Datei als Zahlentupel ("1.0.1.60" -> (1, 0, 1, 60)), None wenn
+    sie fehlt oder nicht nur aus Zahlen besteht."""
+    try:
+        return tuple(int(part) for part in path.read_text().strip().split("."))
+    except (OSError, ValueError):
+        return None
+
+
 def reexec_if_updater_changed(repo_dir: Path, reason: str = "") -> None:
-    """Ist update_probe.py im Checkout neuer als die laufende Kopie, sie
+    """Weicht update_probe.py im Checkout von der laufenden Kopie ab, sie
     ersetzen und neu starten - der Rest des Laufs passiert dann schon mit der
     neuen Logik (sonst gaelte jede Aenderung hier erst einen Lauf spaeter).
-    Nur einmal pro Lauf (REEXEC_ENV)."""
+    Nur einmal pro Lauf (REEXEC_ENV).
+
+    Nicht bei einem Downgrade (Checkout-VERSION aelter als die installierte,
+    z.B. Wechsel von main auf einen aelteren stable): Der alte Updater kennt
+    die Fortsetzung nach dem Neustart nicht, meldete "bereits aktuell" und
+    hinterliess einen Mischstand. Stattdessen installiert dieser Lauf alles,
+    den alten Updater eingeschlossen, in einem Rutsch."""
     running = Path(__file__).resolve()
     new = repo_dir / "update_probe.py"
     if os.environ.get(REEXEC_ENV) or not new.is_file() or running.parent != INSTALL_DIR.resolve():
         return
     if filecmp.cmp(new, running, shallow=False):
+        return
+    checkout_version = version_tuple(repo_dir / "VERSION")
+    installed_version = version_tuple(INSTALL_DIR / "VERSION")
+    if checkout_version is not None and installed_version is not None and checkout_version < installed_version:
+        log("Checkout ist aelter als die Installation - Updater wird ohne Neustart mit ersetzt")
         return
     shutil.copy2(new, running)
     log("Updater selbst aktualisiert - Neustart mit der neuen Version")

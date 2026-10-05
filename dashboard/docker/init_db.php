@@ -59,6 +59,8 @@ $migrations = [
     ['site_alerting', 'auth_slow_seconds', 'DECIMAL(5,1) NULL AFTER language'],
     ['site_alerting', 'assoc_slow_seconds', 'DECIMAL(5,1) NULL AFTER auth_slow_seconds'],
     ['site_alerting', 'dhcp_slow_seconds', 'DECIMAL(5,1) NULL AFTER assoc_slow_seconds'],
+    ['site_alerting', 'eap_abort_rate_pct', 'TINYINT UNSIGNED NULL AFTER dhcp_slow_seconds'],
+    ['site_alerting', 'eap_abort_window_minutes', 'SMALLINT UNSIGNED NULL AFTER eap_abort_rate_pct'],
 ];
 foreach ($migrations as [$table, $column, $definition]) {
     $check = $pdo->prepare(

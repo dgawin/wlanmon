@@ -253,6 +253,12 @@ CREATE TABLE IF NOT EXISTS site_alerting (
     -- NULL = keine Faerbung. Fehlen die Spalten, legt site_alerting_set() sie an.
     assoc_slow_seconds          DECIMAL(5,1) NULL,
     dhcp_slow_seconds           DECIMAL(5,1) NULL,
+    -- Regel "eap_abort_rate:<SSID>" (check_alerts.php): Anteil fehlgeschlagener
+    -- Tests an einer 802.1X-SSID im Zeitfenster (Minuten) in Prozent, ab dem
+    -- alarmiert wird (mind. 3 Fehlschlaege). NULL = Regel aus. Fehlen die
+    -- Spalten, legt site_alerting_set() sie an.
+    eap_abort_rate_pct          TINYINT UNSIGNED NULL,
+    eap_abort_window_minutes    SMALLINT UNSIGNED NULL,
     updated_at                  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_site_alerting_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -272,4 +278,16 @@ CREATE TABLE IF NOT EXISTS captures (
     -- Tabellen automatisch ergaenzt, siehe captures_ensure_table()).
     wpa_log     MEDIUMTEXT NULL,
     KEY idx_captures_device (device_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Anmeldeversuche aus der Authentifizierungs-Historie von OmniVista Cirrus
+-- zu einem Connection-Test (src/CirrusAuth.php), gespeichert nach dem ersten
+-- Abruf; wird mit der Messung geloescht. Bestehende Installationen: wird
+-- beim ersten Abruf automatisch angelegt.
+CREATE TABLE IF NOT EXISTS cirrus_auth_lookups (
+    measurement_id  BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+    fetched_at      DATETIME NOT NULL,
+    records         MEDIUMTEXT NOT NULL,
+    CONSTRAINT fk_cirrus_auth_measurement FOREIGN KEY (measurement_id)
+        REFERENCES measurements(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

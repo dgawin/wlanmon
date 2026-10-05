@@ -197,6 +197,8 @@ class ScanLoop(threading.Thread):
         self._interface = cfg["interface"]["name"]
         self._country = _country(cfg)
         self._interval = cfg["scan"]["interval_seconds"]
+        # Scans je Durchlauf, zusammengefuehrt (siehe wifi_ops.scan()).
+        self._passes = min(5, max(1, int(cfg["scan"].get("passes") or 2)))
         # Verwaltungs-Interface (Kabel) - dessen IP wird bei jedem Scan mit
         # an den Server gemeldet und im Dashboard angezeigt.
         self._mgmt_interface = (cfg.get("display") or {}).get("management_interface") or "eth0"
@@ -221,7 +223,7 @@ class ScanLoop(threading.Thread):
                     # Falls die Ländereinstellung zwischendurch zurückgesetzt
                     # wurde (z.B. Treiber neu geladen) - setzt nur bei Abweichung.
                     ensure_regdomain(self._country)
-                    results = scan(self._interface)
+                    results, pass_counts = scan(self._interface, passes=self._passes)
                     # Direkt nach dem Scan, solange die Kanalzaehler noch
                     # zu diesem Scan gehoeren (siehe channel_survey()).
                     try:
@@ -234,10 +236,12 @@ class ScanLoop(threading.Thread):
                     "interface": self._interface,
                     "local_ips": self._local_ips(),
                     "networks": [dataclasses.asdict(r) for r in results],
+                    "pass_counts": pass_counts,
                     "channels": [dataclasses.asdict(s) for s in surveys],
                 }
                 self._store.enqueue("scan", payload)
-                log.info("Scan abgeschlossen: %d Netze gefunden", len(results))
+                log.info("Scan abgeschlossen: %d Netze gefunden (je Durchgang: %s)",
+                         len(results), ", ".join(map(str, pass_counts)))
                 if self._status is not None:
                     self._status.update_scan(len(results))
             except Exception:

@@ -57,6 +57,7 @@ function site_alerting_set(int $siteId, array $data): void
         foreach ([
             'language' => 'VARCHAR(5) NULL', 'auth_slow_seconds' => 'DECIMAL(5,1) NULL',
             'assoc_slow_seconds' => 'DECIMAL(5,1) NULL', 'dhcp_slow_seconds' => 'DECIMAL(5,1) NULL',
+            'eap_abort_rate_pct' => 'TINYINT UNSIGNED NULL', 'eap_abort_window_minutes' => 'SMALLINT UNSIGNED NULL',
         ] as $column => $definition) {
             try {
                 db()->query("SELECT $column FROM site_alerting LIMIT 0");
@@ -68,6 +69,20 @@ function site_alerting_set(int $siteId, array $data): void
     }
 }
 
+/**
+ * Regelnamen der offenen Alarme eines Geraets, die mit $prefix beginnen
+ * (z.B. "eap_abort_rate:") - um Alarme zu SSIDs zu schliessen, die nicht
+ * mehr getestet werden.
+ *
+ * @return string[]
+ */
+function alert_active_rules_with_prefix(string $deviceId, string $prefix): array
+{
+    $stmt = db()->prepare('SELECT rule FROM alerts WHERE device_id = ? AND resolved_at IS NULL AND rule LIKE ?');
+    $stmt->execute([$deviceId, addcslashes($prefix, '%_\\') . '%']);
+    return array_map('strval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+}
+
 function site_alerting_write(int $siteId, array $data): void
 {
     $stmt = db()->prepare(
@@ -75,8 +90,9 @@ function site_alerting_write(int $siteId, array $data): void
             site_id, enabled, offline_after_minutes, consecutive_test_failures, repeat_after_minutes,
             email_enabled, email_to, telegram_enabled, telegram_chat_id,
             schedule_mode, schedule_days, schedule_start_hour, schedule_end_hour, language,
-            auth_slow_seconds, assoc_slow_seconds, dhcp_slow_seconds
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            auth_slow_seconds, assoc_slow_seconds, dhcp_slow_seconds,
+            eap_abort_rate_pct, eap_abort_window_minutes
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
             offline_after_minutes = VALUES(offline_after_minutes),
@@ -93,7 +109,9 @@ function site_alerting_write(int $siteId, array $data): void
             language = VALUES(language),
             auth_slow_seconds = VALUES(auth_slow_seconds),
             assoc_slow_seconds = VALUES(assoc_slow_seconds),
-            dhcp_slow_seconds = VALUES(dhcp_slow_seconds)'
+            dhcp_slow_seconds = VALUES(dhcp_slow_seconds),
+            eap_abort_rate_pct = VALUES(eap_abort_rate_pct),
+            eap_abort_window_minutes = VALUES(eap_abort_window_minutes)'
     );
     $stmt->execute([
         $siteId,
@@ -113,6 +131,8 @@ function site_alerting_write(int $siteId, array $data): void
         $data['auth_slow_seconds'] ?? null,
         $data['assoc_slow_seconds'] ?? null,
         $data['dhcp_slow_seconds'] ?? null,
+        $data['eap_abort_rate_pct'] ?? null,
+        $data['eap_abort_window_minutes'] ?? null,
     ]);
 }
 

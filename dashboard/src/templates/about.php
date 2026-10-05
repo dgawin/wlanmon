@@ -16,7 +16,7 @@
 <main class="text-main">
 <h1><i class="fa-solid fa-circle-info"></i> <?= te('Über WLANMON') ?></h1>
 <p>
-    <?= te('WLANMON überwacht WLAN-Qualität und -Erreichbarkeit an mehreren Standorten. Kleine Messgeräte (NanoPi, Raspberry Pi) scannen regelmäßig die WLAN-Umgebung, verbinden sich mit den konfigurierten Netzen und messen Verbindungsaufbau, DHCP, Latenz und Durchsatz. Dieses Dashboard wertet die Ergebnisse aus, zeigt Verlauf und Spektrum und alarmiert bei Störungen per E-Mail oder Telegram.') ?>
+    <?= te('WLANMON zeigt, wie es um das WLAN an jedem Standort steht – bevor sich die Nutzer melden. Kleine Linux-Rechner (Raspberry Pi, NanoPi) verhalten sich vor Ort wie ein Client: Sie scannen die Umgebung, verbinden sich mit den Ziel-SSIDs und messen, wie lange jeder Schritt dauert – Assoziation, 802.1X, DHCP, Erreichbarkeit und auf Wunsch den Durchsatz mit iperf3. Dieses Dashboard sammelt die Ergebnisse, zeigt Verlauf und Spektrum und alarmiert per E-Mail, Telegram oder über Zabbix.') ?>
 </p>
 
 <h2><span><i class="fa-solid fa-door-open"></i> <?= te('Gast-WLANs mit Captive Portal') ?></span></h2>
@@ -37,6 +37,7 @@
     <?= teh('Entwickelt von %s gemeinsam mit %s (Anthropic) als KI-Umsetzungspartner. Open Source unter der MIT-Lizenz.', '<strong>Dominik Gawin</strong>', '<strong>Claude</strong>') ?>
 </p>
 <p class="muted"><?= te('Dashboard-Version %s', dashboard_version()) ?></p>
+<p class="muted"><small><?= te('WLANMON ist ein unabhängiges Projekt und steht in keiner Verbindung zu den genannten Herstellern. Alcatel-Lucent ist eine Marke von Nokia, von ALE unter Lizenz genutzt; OmniVista ist eine Marke von ALE. Raspberry Pi ist eine Marke von Raspberry Pi Ltd. Alle anderen Produkt- und Firmennamen sind Marken ihrer jeweiligen Inhaber.') ?></small></p>
 </main>
 <?php require __DIR__ . '/_footer.php'; ?>
 </body>

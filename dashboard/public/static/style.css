@@ -310,6 +310,8 @@ main {
 
 /* Download-Links zum Mitschnitt eines fehlgeschlagenen Tests (Testtabelle). */
 .capture-links { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; margin-top: 0.3rem; white-space: nowrap; }
+.cirrus-auth-box { margin-top: 0.4rem; padding: 0.4rem 0.6rem; border-left: 3px solid var(--border); color: var(--fg); font-size: 0.9em; }
+.cirrus-auth-record + .cirrus-auth-record { margin-top: 0.5rem; }
 
 /* Textseiten (Über): angenehme Zeilenlänge statt Formularbreite. */
 .text-main {

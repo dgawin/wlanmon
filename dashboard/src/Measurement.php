@@ -79,6 +79,23 @@ function measurement_list(string $deviceId, string $kind, int $limit = 20): arra
 }
 
 /**
+ * Messungen eines Geraets seit $sinceUtc nach Messzeitpunkt der Probe
+ * (client_timestamp, sonst received_at) - eine nach einem Ausfall gesammelt
+ * nachgereichte Warteschlange zaehlt so zu ihrer echten Zeit.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function measurement_list_since(string $deviceId, string $kind, string $sinceUtc): array
+{
+    $stmt = db()->prepare(
+        'SELECT * FROM measurements WHERE device_id = ? AND kind = ?
+           AND COALESCE(client_timestamp, received_at) >= ? ORDER BY received_at DESC'
+    );
+    $stmt->execute([$deviceId, $kind, $sinceUtc]);
+    return $stmt->fetchAll();
+}
+
+/**
  * Kennzahlen über Connection-Tests (neueste zuerst, wie aus measurement_list()):
  * wie viele SSIDs im jeweils neuesten Test verbunden waren, Tests gesamt /
  * erfolgreich und die Durchschnittsdauern (nur über Tests, in denen der Wert

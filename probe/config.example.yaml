@@ -58,6 +58,10 @@ scan:
   # Nur Fallback-Wert, siehe remote_config oben.
   # Wie oft ein reiner Scan (alle sichtbaren SSIDs/BSSIDs) durchgeführt wird
   interval_seconds: 60
+  # Scans je Durchlauf direkt hintereinander, nach BSSID zusammengeführt
+  # (1-5). Ein einzelner Scan verpasst schnell ein paar Netze; 2 glättet die
+  # Schwankung deutlich und dauert nur einige Sekunden länger.
+  passes: 2
 
 connection_tests:
   # Nur Fallback-Werte, siehe remote_config oben.

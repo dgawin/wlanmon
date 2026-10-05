@@ -15,6 +15,7 @@ require_once __DIR__ . '/../src/Session.php';
 require_once __DIR__ . '/../src/User.php';
 require_once __DIR__ . '/../src/Site.php';
 require_once __DIR__ . '/../src/Cirrus.php';
+require_once __DIR__ . '/../src/CirrusAuth.php';
 require_once __DIR__ . '/../src/Timeline.php';
 require_once __DIR__ . '/../src/Retention.php';
 require_once __DIR__ . '/../src/Audit.php';
@@ -164,6 +165,13 @@ try {
         // Enthaelt MACs und ggf. 802.1X-Identitaeten - nicht fuer Viewer.
         require_write_access(require_device_access($device));
         handle_download_capture($device['id'], $m[2], $m[3]);
+        exit;
+    }
+    if ($method === 'GET' && preg_match('#^/devices/([^/]+)/measurements/(\d+)/cirrus-auth$#', $path, $m)) {
+        $device = device_find_or_404($m[1]);
+        // Enthaelt Benutzernamen - wie die Mitschnitte nicht fuer Viewer.
+        require_write_access(require_device_access($device));
+        handle_cirrus_auth_fragment($device['id'], (int) $m[2]);
         exit;
     }
     if ($method === 'GET' && preg_match('#^/devices/([^/]+)/config$#', $path, $m)) {
@@ -417,6 +425,24 @@ function handle_upload_capture(string $deviceId, string $captureId): void
     }
     capture_store($captureId, $deviceId, $pcap, $events, $wpaLog);
     json_response(['ok' => true], 201);
+}
+
+/**
+ * HTML-Ausschnitt mit den Cirrus-Anmeldeversuchen zu einem Test - wird per
+ * Klick auf "Cirrus" in der Fehlerspalte nachgeladen (device_detail.php).
+ */
+function handle_cirrus_auth_fragment(string $deviceId, int $measurementId): void
+{
+    $measurement = measurement_find($measurementId, $deviceId);
+    if ($measurement === null || $measurement['kind'] !== 'connection_test') {
+        http_response_code(404);
+        echo e(__('Messung nicht gefunden.'));
+        return;
+    }
+    $result = cirrus_auth_for_test($measurement);
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: no-store');
+    require __DIR__ . '/../src/templates/_cirrus_auth.php';
 }
 
 function handle_download_capture(string $deviceId, string $captureId, string $type): void
@@ -673,6 +699,8 @@ function handle_set_device_config_via_form(string $deviceId): void
     $config = [
         'scan' => [
             'interval_seconds' => max(1, (int) ($_POST['scan_interval_seconds'] ?? 60)),
+            // Scans je Durchlauf, nach BSSID zusammengefuehrt (Probe ab 1.0.1.61).
+            'passes' => min(5, max(1, (int) ($_POST['scan_passes'] ?? 2))),
         ],
         // Heartbeat mit Systemwerten (Probe ab 1.0.1.54), Intervall aus fester Auswahl.
         'heartbeat' => [
@@ -1742,6 +1770,9 @@ function site_alerting_from_post(): array
         'auth_slow_seconds' => post_seconds_threshold('auth_slow_seconds'),
         'assoc_slow_seconds' => post_seconds_threshold('assoc_slow_seconds'),
         'dhcp_slow_seconds' => post_seconds_threshold('dhcp_slow_seconds'),
+        // 802.1X-Abbruchrate: Prozent 1-100, leer/0 = aus; Zeitfenster 10 Min. bis 24 h.
+        'eap_abort_rate_pct' => ($pct = (int) ($_POST['eap_abort_rate_pct'] ?? 0)) > 0 ? min(100, $pct) : null,
+        'eap_abort_window_minutes' => min(1440, max(10, (int) ($_POST['eap_abort_window_minutes'] ?? 60))),
     ];
 }
 
@@ -1786,6 +1817,8 @@ function render_site_alerting(int $siteId, ?array $testResult = null): void
             'auth_slow_seconds' => null,
             'assoc_slow_seconds' => null,
             'dhcp_slow_seconds' => null,
+            'eap_abort_rate_pct' => null,
+            'eap_abort_window_minutes' => 60,
         ];
     }
     $settingsSaved = isset($_GET['saved']);

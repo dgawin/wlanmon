@@ -234,6 +234,12 @@ e-mails the language of the inviting admin.
 - **802.1X slow** (optional) – the 802.1X login took longer than
   `auth_slow_seconds` in *each* of the last tests, so a single outlier does
   not trigger it. Useful to spot a slow or badly reachable RADIUS server.
+- **802.1X fails often** (optional) – at least `eap_abort_rate_pct` percent of
+  the tests on an 802.1X SSID failed within the time window (default 60
+  minutes), and at least 3 of them. This catches logins that fail on and off
+  long before the SSID goes down completely. The message names the most
+  common cause. All-clear once the rate drops below half the threshold; a
+  complete outage is left to "SSID failing".
 
 A new problem is reported right away, a lasting one again after
 `repeat_after_minutes`, and you get an all-clear once it is over.
@@ -381,6 +387,12 @@ dashboard can read from its REST API (read-only) and show:
   whether a failed or slow test was down to the RF situation
 - the **channel utilisation over time** in the device's "Timeline" tab, next
   to the values from the probe's own scans (kept 30 days)
+- the **login attempts behind a failed 802.1X test**: click "Cirrus login" next
+  to the test to see what Cirrus recorded for the probe's MAC around that time
+  – accepted or rejected, the reject reason, AP, policy, role and VLAN.
+  Logins that break off in the middle of EAP (e.g. during the TLS setup) may
+  not appear there at all. Fetched on click only and then stored with the
+  test (admins and users).
 
 In `config.php` (see `config.example.php`, block `cirrus`):
 

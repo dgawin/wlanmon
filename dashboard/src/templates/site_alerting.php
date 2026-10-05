@@ -81,6 +81,17 @@ $resultPill = function (string $channel) use ($testResult): void {
             <span class="muted"><?= te('Alarm, wenn die 802.1X-Anmeldung einer SSID bei den letzten Tests (Anzahl wie oben) jedes Mal länger dauerte – erkennt einen langsamen oder schlecht erreichbaren RADIUS-Server, z. B. in der Cloud.') ?></span>
         </label>
         <label>
+            <?= te('802.1X-Abbruchrate: Alarm ab (%, leer = aus)') ?>
+            <input type="number" min="0" max="100" step="1" name="eap_abort_rate_pct"
+                   value="<?= isset($siteAlerting['eap_abort_rate_pct']) ? e((string) (int) $siteAlerting['eap_abort_rate_pct']) : '' ?>">
+            <span class="muted"><?= te('Alarm, wenn an einer 802.1X-SSID im Zeitfenster mindestens dieser Anteil der Tests scheitert (und mindestens 3 Tests). Erkennt eine zeitweise hakende Anmeldung, bevor die SSID ganz ausfällt. Entwarnung, wenn die Rate unter die Hälfte fällt. Vorschlag: 20.') ?></span>
+        </label>
+        <label>
+            <?= te('Zeitfenster für die Abbruchrate (Minuten)') ?>
+            <input type="number" min="10" max="1440" step="5" name="eap_abort_window_minutes"
+                   value="<?= e((string) (int) ($siteAlerting['eap_abort_window_minutes'] ?? 60)) ?>">
+        </label>
+        <label>
             <?= te('Assoziation gilt als langsam ab (Sekunden, leer = aus)') ?>
             <input type="number" min="0" step="0.5" name="assoc_slow_seconds"
                    value="<?= isset($siteAlerting['assoc_slow_seconds']) ? e((string) (float) $siteAlerting['assoc_slow_seconds']) : '' ?>">
