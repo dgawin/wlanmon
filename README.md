@@ -10,7 +10,8 @@ Small Linux boards (Raspberry Pi, NanoPi) sit in your offices and behave like a
 client: they scan the air, connect to your SSIDs and measure how long each step
 takes – association, 802.1X, DHCP, reachability and, if you like, throughput
 with iperf3. Everything lands in one web dashboard with history, a spectrum
-view and alerts by e-mail or Telegram.
+view and alerts by e-mail or Telegram. If you already monitor with Zabbix,
+it can discover all probes as hosts and alert on their results.
 
 If your access points are managed by Alcatel-Lucent Enterprise OmniVista
 Cirrus, the dashboard can optionally connect to its API (read-only). It then
