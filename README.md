@@ -12,6 +12,13 @@ takes – association, 802.1X, DHCP, reachability and, if you like, throughput
 with iperf3. Everything lands in one web dashboard with history, a spectrum
 view and alerts by e-mail or Telegram.
 
+If your access points are managed by Alcatel-Lucent Enterprise OmniVista
+Cirrus, the dashboard can optionally connect to its API (read-only). It then
+shows the AP name for every BSSID the probes see, the radio state of your APs
+(channel, utilisation, noise, transmit power) and their channel load next to
+the probes' own measurements – so you can tell whether a slow or failed test
+was down to the RF situation.
+
 Website: [wlanmon.com](https://wlanmon.com)
 
 | Folder | What's inside |
@@ -53,3 +60,12 @@ details in the [table in the probe README](probe/README.md#tested-hardware).
 
 MIT – see [LICENSE](LICENSE). The name and logo "wlanmon" are not covered by
 the license.
+
+## Trademarks
+
+wlanmon is an independent project and is not affiliated with, endorsed by or
+sponsored by any of the companies named here. Alcatel-Lucent is a trademark of
+Nokia used under license by ALE; OmniVista is a trademark of ALE. Raspberry Pi
+is a trademark of Raspberry Pi Ltd. All other product and company names are
+trademarks of their respective owners and are used only to describe
+compatibility.
