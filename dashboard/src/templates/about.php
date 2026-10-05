@@ -38,5 +38,6 @@
 </p>
 <p class="muted"><?= te('Dashboard-Version %s', dashboard_version()) ?></p>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

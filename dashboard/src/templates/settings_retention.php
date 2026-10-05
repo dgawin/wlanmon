@@ -11,6 +11,7 @@
 
 $kindRows = [
     'scan' => [__('Scans'), 'scan_days'],
+    'health' => [__('Systemwerte'), 'scan_days'],
     'connection_test' => [__('Connection-Tests'), 'test_days'],
     'lan_test' => [__('LAN-Tests'), 'test_days'],
 ];
@@ -58,7 +59,7 @@ $backupOk = !empty($lastBackup['ok']) && $backupAgeHours !== null && $backupAgeH
     <fieldset>
         <legend><i class="fa-solid fa-clock-rotate-left"></i> <?= te('Aufbewahrung') ?></legend>
         <label>
-            <?= te('WLAN-Scans aufbewahren (Tage)') ?>
+            <?= te('WLAN-Scans und Systemwerte aufbewahren (Tage)') ?>
             <input type="number" min="0" max="<?= RETENTION_MAX_DAYS ?>" name="scan_days" value="<?= (int) $retention['scan_days'] ?>">
             <span class="muted"><?= te('Mit Abstand der größte Datenposten (ein Scan pro Minute und Gerät). Standard: 90 Tage.') ?></span>
         </label>
@@ -104,6 +105,7 @@ $backupOk = !empty($lastBackup['ok']) && $backupAgeHours !== null && $backupAgeH
         <?php
         $deletedLabels = [
             'scan' => __('Scans'),
+            'health' => __('Systemwerte'),
             'connection_test' => __('Connection-Tests'),
             'lan_test' => __('LAN-Tests'),
             'alerts' => __('behobene Alarme'),
@@ -167,5 +169,6 @@ $backupOk = !empty($lastBackup['ok']) && $backupAgeHours !== null && $backupAgeH
 <?php endif; ?>
 <p class="muted"><?= te('Den Schlüssel getrennt vom Datenbank-Backup aufbewahren (z. B. im Passwort-Manager): ohne ihn sind die verschlüsselten Zugangsdaten verloren und müssen neu eingegeben werden.') ?></p>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

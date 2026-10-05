@@ -96,6 +96,36 @@ body {
     line-height: 1.55;
     background: var(--bg);
     color: var(--fg);
+    /* Spalte aus Kopfzeile, Inhalt und Fusszeile: main waechst, die
+       Fusszeile sitzt so auch auf kurzen Seiten am unteren Rand. */
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+body > main {
+    width: 100%;
+    flex: 1 0 auto;
+}
+
+/* Schmale Fusszeile (src/templates/_footer.php): Version und Website. */
+.site-footer {
+    padding: 0.5rem 1.5rem;
+    text-align: center;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.site-footer a {
+    color: inherit;
+}
+
+.site-footer a:hover {
+    color: var(--fg);
 }
 
 header {
@@ -348,6 +378,8 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); 
 .ok { color: var(--ok); font-weight: 600; }
 .fail { color: var(--fail); font-weight: 600; }
 .warn { color: var(--warn); font-weight: 600; }
+/* Werte wie Geraetenamen oder Zeitpunkte nicht mitten im Wort umbrechen. */
+.nowrap { white-space: nowrap; }
 .empty { color: var(--muted); font-style: italic; }
 
 /* Kleine farbige Status-Pille (z.B. "Online", "Portal erkannt") -
@@ -467,6 +499,34 @@ pre {
     gap: 0.25rem;
 }
 
+/* Automatische Aktualisierung (Geraeteliste): rechts in der Filterleiste,
+   Countdown links neben der Auswahl auf Hoehe des Feldes. */
+.scan-filters .refresh-control {
+    margin-left: auto;
+    display: flex;
+    align-items: flex-end;
+    gap: 0.8rem;
+}
+
+.scan-filters .refresh-control > .muted {
+    padding-bottom: 0.45rem;
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+/* Checkbox in der Filterleiste: auf Hoehe der Eingabefelder, Text daneben. */
+.scan-filters label.filter-check span {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0;
+    font-weight: 400;
+}
+
+.scan-filters input[type="checkbox"] {
+    padding: 0;
+}
+
 .scan-filters input,
 .scan-filters select {
     padding: 0.4rem 0.55rem;
@@ -481,20 +541,25 @@ pre {
     margin-bottom: 0.5rem;
 }
 
-table.scan-table th[data-sort] {
+/* Sortierbare Spaltenkoepfe: Scan-Tabelle (Geraeteseite) und Geraeteliste. */
+table.scan-table th[data-sort],
+table.sortable th[data-sort] {
     cursor: pointer;
     user-select: none;
 }
 
-table.scan-table th[data-sort]:hover {
+table.scan-table th[data-sort]:hover,
+table.sortable th[data-sort]:hover {
     text-decoration: underline;
 }
 
-table.scan-table th[data-sort][data-dir="asc"]::after {
+table.scan-table th[data-sort][data-dir="asc"]::after,
+table.sortable th[data-sort][data-dir="asc"]::after {
     content: " \25B2";
 }
 
-table.scan-table th[data-sort][data-dir="desc"]::after {
+table.scan-table th[data-sort][data-dir="desc"]::after,
+table.sortable th[data-sort][data-dir="desc"]::after {
     content: " \25BC";
 }
 
@@ -871,15 +936,17 @@ label.check-label {
 .status-offline { background: var(--fail); }
 
 /* Kennzahlen-Kacheln oben auf der Geräte-Detailseite */
+/* Raster statt Flex: alle Kacheln einer Reihe gleich breit, eine einzelne
+   Kachel in der letzten Zeile bleibt so breit wie die darueber (auto-fit
+   streckt nur, solange alle in eine Zeile passen). */
 .kpi-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 1rem;
-    flex-wrap: wrap;
     margin: 1rem 0 1.8rem;
 }
 
 .kpi-tile {
-    flex: 1 1 180px;
     background: var(--card-bg);
     border: 1px solid var(--border);
     box-shadow: var(--card-shadow);
@@ -968,8 +1035,8 @@ label.check-label {
     h1 { font-size: 1.4rem; }
     h2 { margin-top: 1.4rem; font-size: 1.15rem; }
     th, td { padding: 0.4rem 0.45rem; font-size: 0.85rem; }
-    .kpi-row { gap: 0.6rem; }
-    .kpi-tile { flex: 1 1 140px; padding: 0.75rem 0.9rem; }
+    .kpi-row { gap: 0.6rem; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+    .kpi-tile { padding: 0.75rem 0.9rem; }
     .kpi-value { font-size: 1.2rem; }
     .tabs {
         flex-wrap: nowrap;

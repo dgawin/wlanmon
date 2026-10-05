@@ -296,6 +296,26 @@ $renderTarget = function (string $idx, array $t) use ($securityOptions, $portalT
         </label>
     </fieldset>
 
+    <?php $hb = is_array($config['heartbeat'] ?? null) ? $config['heartbeat'] : []; ?>
+    <fieldset>
+        <legend><i class="fa-solid fa-heart-pulse"></i> <?= te('Heartbeat und Systemwerte') ?></legend>
+        <label class="check-label">
+            <input type="checkbox" name="hb_enabled" value="1" <?= ($hb['enabled'] ?? true) ? 'checked' : '' ?>>
+            <?= te('Heartbeat senden') ?>
+        </label>
+        <label>
+            <?= te('Intervall') ?>
+            <select name="hb_interval_seconds">
+                <?php foreach (HEARTBEAT_INTERVALS as $sec): ?>
+                    <option value="<?= $sec ?>" <?= (int) ($hb['interval_seconds'] ?? 60) === $sec ? 'selected' : '' ?>>
+                        <?= $sec < 60 ? te('%d Sekunden', $sec) : ($sec === 60 ? te('1 Minute') : te('%d Minuten', intdiv($sec, 60))) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </label>
+        <p class="muted"><?= te('Die Probe meldet sich im festen Takt, auch wenn gerade keine Messung ansteht, und schickt dabei ihre Systemwerte mit: CPU, Arbeitsspeicher, Speicherplatz, Temperatur, Laufzeit und noch nicht übertragene Messungen. So ist der Online-Status unabhängig vom Messtakt, und Änderungen an dieser Konfiguration kommen sofort an statt nach bis zu 5 Minuten. Ab Probe 1.0.1.54.') ?></p>
+    </fieldset>
+
     <fieldset>
         <legend><i class="fa-solid fa-plug-circle-check"></i> <?= te('Connection-Tests') ?></legend>
         <label>
@@ -346,7 +366,7 @@ $renderTarget = function (string $idx, array $t) use ($securityOptions, $portalT
             <?= te('iperf3 höchstens alle … Minuten (je SSID)') ?>
             <input type="number" min="0" max="10080" name="ct_iperf3_min_interval_minutes"
                    value="<?= e($config['connection_tests']['iperf3_min_interval_minutes'] ?? 0) ?>">
-            <span class="muted"><?= te('0 = bei jedem Test. Verbindung, DHCP, Ping und Portal-Check laufen weiter in jedem Zyklus, nur die Durchsatzmessung wird seltener - sonst zeigt der Verlauf vor allem die Last der eigenen Tests. Empfehlung: 60. Taste 3 am Gerät misst immer mit. Ab Probe 1.0.1.14.') ?></span>
+            <span class="muted"><?= te('0 = bei jedem Test. Verbindung, DHCP, Ping und Portal-Check laufen weiter in jedem Zyklus, nur die Durchsatzmessung wird seltener - sonst zeigt der Verlauf vor allem die Last der eigenen Tests, und mehrere Probes am selben iperf3-Server blockieren sich gegenseitig. Empfehlung: 60. Taste 3 am Gerät misst immer mit. Gilt auch für den LAN-Test, solange dort kein eigener Abstand eingetragen ist.') ?></span>
         </label>
         <label class="check-label">
             <input type="checkbox" name="ct_capture_on_failure" value="1"
@@ -361,7 +381,7 @@ $renderTarget = function (string $idx, array $t) use ($securityOptions, $portalT
         <legend><i class="fa-solid fa-ethernet"></i> <?= te('iperf3 über LAN (Upload + Download)') ?></legend>
         <label>
             <input type="checkbox" name="lan_enabled" value="1" <?= !empty($lan['enabled']) ? 'checked' : '' ?>>
-            <?= te('LAN-Durchsatztest aktivieren (einmal pro Testzyklus)') ?>
+            <?= te('LAN-Durchsatztest aktivieren') ?>
         </label>
         <label>
             <?= te('iperf3-Server (Zieladresse)') ?>
@@ -382,6 +402,12 @@ $renderTarget = function (string $idx, array $t) use ($securityOptions, $portalT
             <?= te('Port') ?>
             <input type="number" min="1" max="65535" name="lan_port"
                    value="<?= e($lan['port'] ?? 5201) ?>">
+        </label>
+        <label>
+            <?= te('LAN-Test höchstens alle … Minuten') ?>
+            <input type="number" min="0" max="10080" name="lan_min_interval_minutes" placeholder="<?= te('wie oben') ?>"
+                   value="<?= isset($lan['min_interval_minutes']) ? e((int) $lan['min_interval_minutes']) : '' ?>">
+            <span class="muted"><?= te('0 = in jedem Testzyklus, leer = wie „iperf3 höchstens alle … Minuten“ oben. Messen mehrere Probes gegen denselben iperf3-Server, blockieren sie sich bei zu kurzem Abstand gegenseitig – z. B. 15 oder 30. Ab Probe 1.0.1.53.') ?></span>
         </label>
     </fieldset>
 
@@ -494,5 +520,6 @@ $renderTarget = function (string $idx, array $t) use ($securityOptions, $portalT
     <?php endif; ?>
 </div>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

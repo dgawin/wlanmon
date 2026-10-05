@@ -94,5 +94,6 @@ $utilizationPill = function (?float $pct): array {
     </p>
 <?php endif; ?>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

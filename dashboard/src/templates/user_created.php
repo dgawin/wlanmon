@@ -34,5 +34,6 @@
 
 <p><a href="/users" class="back-link"><i class="fa-solid fa-arrow-left"></i> <?= te('Zur Benutzerliste') ?></a></p>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

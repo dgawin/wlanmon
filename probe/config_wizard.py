@@ -32,6 +32,7 @@ from pathlib import Path
 DEFAULT_CONFIG = Path("/etc/wlanmon-probe/config.yaml")
 EXAMPLE_CONFIG = Path(__file__).resolve().parent / "config.example.yaml"
 PLACEHOLDER_KEY = "CHANGE-ME"
+KEEP_BACKUPS = 5  # config.yaml.bak.<timestamp> files kept after saving
 
 BOLD, DIM, GRN, YEL, RED, RST = (
     ("\033[1m", "\033[2m", "\033[32m", "\033[33m", "\033[31m", "\033[0m")
@@ -226,6 +227,189 @@ def normalize_url(answer: str) -> str:
     return url
 
 
+def is_checkout(path: Path) -> bool:
+    """Probe sources with a .git in the folder itself or a parent (probe/
+    subfolder of the shared repo) - same rule as git_toplevel() in
+    update_probe.py."""
+    if not (path / "update_probe.py").is_file():
+        return False
+    return any((d / ".git").exists() for d in (path, *path.parents))
+
+
+# --- Questions -------------------------------------------------------------------
+# One function per value, so the summary can ask a single value again.
+
+def ask_device_id(default: str) -> str:
+    return ask("Device ID (exactly as created in the dashboard)", default,
+               lambda a: None if re.match(r"^[A-Za-z0-9._-]+$", a) else "Letters, digits, . _ - only.")
+
+
+def ask_url(default: str | None) -> str:
+    return normalize_url(ask("Dashboard API URL", default, validate_url))
+
+
+def ask_api_key(current: str) -> str:
+    has_key = bool(current) and current != PLACEHOLDER_KEY
+    return ask("API key (shown once when the device was created)",
+               current if has_key else None, secret_default=True)
+
+
+def ask_tls(url: str, current) -> object | None:
+    """Value for server.verify_tls; None = user does not want http://."""
+    if url.lower().startswith("http://"):
+        say(f"  {YEL}Warning: http:// sends the API key and the central configuration including Wi-Fi "
+            f"passwords unencrypted. Only use it in an isolated test network.{RST}")
+        if not ask_yes("Continue with http:// anyway?", False):
+            return None
+        return current if current is not None else True
+    current_mode = "ca" if isinstance(current, str) else ("off" if current is False else "on")
+    mode = ask_choice("Server certificate", [
+        ("on", "Public certificate (e.g. Let's Encrypt) - recommended"),
+        ("ca", "Internal CA - trust a CA certificate file on this probe"),
+        ("off", "Do not verify (self-signed, no CA file) - encrypted, but not protected against interception"),
+    ], current_mode)
+    if mode == "ca":
+        return ask(
+            "Path to the CA certificate",
+            current if isinstance(current, str) else "/etc/wlanmon-probe/wlanmon-ca.crt",
+            lambda a: None if Path(a).is_file() else f"{a} not found - copy the CA file onto the probe first.",
+        )
+    return mode == "on"
+
+
+def check_connection(answers: dict) -> bool:
+    """Tests until it works or the user gives up. False = do not save."""
+    while True:
+        say("  Testing the connection ...")
+        ok, message = test_connection(str(answers["server.url"]), str(answers["device.id"]),
+                                      str(answers["server.api_key"]), answers["server.verify_tls"])
+        say(f"  {GRN if ok else RED}{message}{RST}")
+        if ok:
+            return True
+        if not ask_yes("Change the answers and test again?", True):
+            return ask_yes("Save anyway (the probe will keep retrying)?", False)
+        answers["server.url"] = ask_url(str(answers["server.url"]))
+        answers["device.id"] = ask_device_id(str(answers["device.id"]))
+        answers["server.api_key"] = ask_api_key(str(answers["server.api_key"]))
+
+
+def ask_interface(current: str) -> tuple[str, bool | None]:
+    """(interface, is_usb); is_usb is None if no adapter was found."""
+    interfaces = wifi_interfaces()
+    if not interfaces:
+        say(f"  {YEL}No Wi-Fi interface found (adapter plugged in? driver loaded?).{RST}")
+        return ask("Interface name", current or "wlan0"), None
+    uplink = default_route_interface()
+    options = [(name, label + (f"  {YEL}<- carries the network uplink{RST}" if name == uplink else ""))
+               for name, label in interfaces]
+    default_iface = current if current in dict(interfaces) else next(
+        (n for n, l in interfaces if "USB" in l and n != uplink), interfaces[0][0])
+    iface = ask_choice("Which adapter should run the tests? It is disconnected and reconfigured for "
+                       "every test.", options, default_iface)
+    if iface == uplink:
+        say(f"  {YEL}Warning: {iface} carries the default route. The tests interrupt this connection - "
+            f"use Ethernet for the uplink.{RST}")
+    return iface, "(USB," in dict(interfaces)[iface]
+
+
+def ask_country(default: str) -> str:
+    return ask("Country code for the regulatory domain (allowed channels, e.g. DE, AT, CH, US)", default,
+               lambda a: None if re.match(r"^[A-Za-z]{2}$", a) else "Two letters, e.g. DE.").upper()
+
+
+def ask_branch(default: str) -> str:
+    return ask_choice("Update channel", [
+        ("stable", "stable - released versions (recommended)"),
+        ("main", "main - every change immediately (test devices)"),
+    ], default)
+
+
+def ask_repo_dir(current: str) -> str:
+    """Git checkout the updates come from. Default: the configured one if it is
+    a checkout, otherwise the folder this wizard runs from."""
+    own = Path(__file__).resolve().parent
+    default = current if current and is_checkout(Path(current)) else (str(own) if is_checkout(own) else current)
+    return ask("Git checkout for the updates (repo_dir)", default or None,
+               lambda a: None if is_checkout(Path(a)) else
+               f"{a} is not a probe checkout (needs update_probe.py and a .git folder).")
+
+
+def ask_watchdog(default: bool, is_usb: bool | None) -> bool:
+    if is_usb is False:
+        # Onboard-Adapter (Pi, brcmfmac) verschwinden nicht per Hotplug.
+        say(f"  {DIM}USB hotplug watchdog: off (the adapter is built in).{RST}")
+        return False
+    return ask_yes("Reboot automatically if the Wi-Fi adapter disappears (USB hotplug watchdog)?", default)
+
+
+def ask_display(default: bool, i2c_port) -> bool:
+    enabled = ask_yes("Is a NanoHat OLED display with buttons attached?", default)
+    if enabled and not Path(f"/dev/i2c-{i2c_port}").exists():
+        # Frisches Armbian: Overlay "i2c0" ist aus, das Display bleibt dann
+        # dunkel und der Dienst loggt nur "I2C device not found".
+        say(f"  {YEL}Warning: /dev/i2c-{i2c_port} does not exist - the I2C bus is not enabled. On Armbian add "
+            f"\"i2c{i2c_port}\" to the overlays= line in /boot/armbianEnv.txt (or use armbian-config) "
+            f"and reboot.{RST}")
+    return enabled
+
+
+def ask_auto_update(answers: dict, values: dict, default: bool) -> None:
+    answers["auto_update.enabled"] = ask_yes("Install updates automatically from the git checkout?", default)
+    if answers["auto_update.enabled"]:
+        answers["auto_update.branch"] = ask_branch(
+            str(answers.get("auto_update.branch") or get(values, "auto_update.branch") or "stable"))
+        answers["auto_update.repo_dir"] = ask_repo_dir(
+            str(answers.get("auto_update.repo_dir") or get(values, "auto_update.repo_dir") or ""))
+    else:
+        answers.pop("auto_update.branch", None)
+        answers.pop("auto_update.repo_dir", None)
+
+
+ORDER = ["device.id", "server.url", "server.api_key", "server.verify_tls", "interface.name",
+         "interface.country", "remote_config.enabled", "auto_update.enabled", "auto_update.branch",
+         "auto_update.repo_dir", "watchdog.enabled", "display.enabled"]
+
+
+def change(key: str, answers: dict, values: dict, state: dict) -> bool:
+    """Asks one value again (current answer as default). False = abort."""
+    if key == "device.id":
+        answers[key] = ask_device_id(str(answers[key]))
+    elif key == "server.url":
+        answers[key] = ask_url(str(answers[key]))
+        verify = ask_tls(str(answers[key]), answers["server.verify_tls"])
+        if verify is None:
+            return False
+        answers["server.verify_tls"] = verify
+    elif key == "server.api_key":
+        answers[key] = ask_api_key(str(answers[key]))
+    elif key == "server.verify_tls":
+        verify = ask_tls(str(answers["server.url"]), answers[key])
+        if verify is None:
+            return False
+        answers[key] = verify
+    elif key == "interface.name":
+        answers[key], state["is_usb"] = ask_interface(str(answers[key]))
+        answers["watchdog.enabled"] = ask_watchdog(bool(answers["watchdog.enabled"]), state["is_usb"])
+    elif key == "interface.country":
+        answers[key] = ask_country(str(answers[key]))
+    elif key == "remote_config.enabled":
+        answers[key] = ask_yes("Fetch the test configuration (SSIDs, intervals) from the dashboard? "
+                               "Recommended", bool(answers[key]))
+    elif key == "auto_update.enabled":
+        ask_auto_update(answers, values, bool(answers[key]))
+    elif key == "auto_update.branch":
+        answers[key] = ask_branch(str(answers[key]))
+    elif key == "auto_update.repo_dir":
+        answers[key] = ask_repo_dir(str(answers[key]))
+    elif key == "watchdog.enabled":
+        answers[key] = ask_watchdog(bool(answers[key]), None if state["is_usb"] is False else state["is_usb"])
+    elif key == "display.enabled":
+        answers[key] = ask_display(bool(answers[key]), get(values, "display.i2c_port", 0))
+    if key.startswith(("device.", "server.")):
+        return check_connection(answers)
+    return True
+
+
 def run(path: Path) -> int:
     if os.geteuid() != 0:
         sys.exit("Please run as root: sudo wlanmon setup")
@@ -238,131 +422,71 @@ def run(path: Path) -> int:
         path.chmod(0o600)
     values = load_values(path)
     answers: dict[str, object] = {}
+    state: dict[str, object] = {"is_usb": None}
 
     say(f"{BOLD}WLANMON probe setup{RST}")
     say(f"Writes {path}. Press Enter to keep the value in [brackets]; Ctrl+C aborts without changes.")
     say("Needed from the dashboard: the device ID and its API key (Devices -> Add device).")
 
     section("Device")
-    answers["device.id"] = ask(
-        "Device ID (exactly as created in the dashboard)",
-        socket.gethostname() if fresh else str(get(values, "device.id") or socket.gethostname()),
-        lambda a: None if re.match(r"^[A-Za-z0-9._-]+$", a) else "Letters, digits, . _ - only.",
-    )
+    answers["device.id"] = ask_device_id(
+        socket.gethostname() if fresh else str(get(values, "device.id") or socket.gethostname()))
 
     section("Dashboard connection")
     current_url = str(get(values, "server.url") or "")
-    url = normalize_url(ask(
-        "Dashboard API URL",
-        current_url if current_url and "example.com" not in current_url else None,
-        validate_url,
-    ))
-    answers["server.url"] = url
-    current_key = str(get(values, "server.api_key") or "")
-    has_key = bool(current_key) and current_key != PLACEHOLDER_KEY
-    answers["server.api_key"] = ask(
-        "API key (shown once when the device was created)",
-        current_key if has_key else None, secret_default=True,
-    )
-
-    verify: object = True
-    if url.lower().startswith("http://"):
-        say(f"  {YEL}Warning: http:// sends the API key and the central configuration including Wi-Fi "
-            f"passwords unencrypted. Only use it in an isolated test network.{RST}")
-        if not ask_yes("Continue with http:// anyway?", False):
-            say("Please re-run the wizard with an https:// URL.")
-            return 1
-    else:
-        current_verify = get(values, "server.verify_tls", True)
-        current_mode = "ca" if isinstance(current_verify, str) else ("off" if current_verify is False else "on")
-        mode = ask_choice("Server certificate", [
-            ("on", "Public certificate (e.g. Let's Encrypt) - recommended"),
-            ("ca", "Internal CA - trust a CA certificate file on this probe"),
-            ("off", "Do not verify (self-signed, no CA file) - encrypted, but not protected against interception"),
-        ], current_mode)
-        if mode == "ca":
-            verify = ask(
-                "Path to the CA certificate",
-                current_verify if isinstance(current_verify, str) else "/etc/wlanmon-probe/wlanmon-ca.crt",
-                lambda a: None if Path(a).is_file() else f"{a} not found - copy the CA file onto the probe first.",
-            )
-        elif mode == "off":
-            verify = False
+    answers["server.url"] = ask_url(current_url if current_url and "example.com" not in current_url else None)
+    answers["server.api_key"] = ask_api_key(str(get(values, "server.api_key") or ""))
+    verify = ask_tls(str(answers["server.url"]), get(values, "server.verify_tls", True))
+    if verify is None:
+        say("Please re-run the wizard with an https:// URL.")
+        return 1
     answers["server.verify_tls"] = verify
-
-    while True:
-        say("  Testing the connection ...")
-        ok, message = test_connection(url, str(answers["device.id"]), str(answers["server.api_key"]), verify)
-        say(f"  {GRN if ok else RED}{message}{RST}")
-        if ok or not ask_yes("Change the answers and test again?", True):
-            if not ok and not ask_yes("Save anyway (the probe will keep retrying)?", False):
-                return 1
-            break
-        answers["server.url"] = url = normalize_url(ask("Dashboard API URL", url, validate_url))
-        answers["device.id"] = ask("Device ID", str(answers["device.id"]))
-        answers["server.api_key"] = ask("API key", str(answers["server.api_key"]), secret_default=True)
+    if not check_connection(answers):
+        return 1
 
     section("Wi-Fi interface for the tests")
-    interfaces = wifi_interfaces()
-    uplink = default_route_interface()
-    current_iface = str(get(values, "interface.name") or "")
-    if interfaces:
-        options = [(name, label + (f"  {YEL}<- carries the network uplink{RST}" if name == uplink else ""))
-                   for name, label in interfaces]
-        default_iface = current_iface if current_iface in dict(interfaces) else next(
-            (n for n, l in interfaces if "USB" in l and n != uplink), interfaces[0][0])
-        iface = ask_choice("Which adapter should run the tests? It is disconnected and reconfigured for "
-                           "every test.", options, default_iface)
-        if iface == uplink:
-            say(f"  {YEL}Warning: {iface} carries the default route. The tests interrupt this connection - "
-                f"use Ethernet for the uplink.{RST}")
-    else:
-        say(f"  {YEL}No Wi-Fi interface found (adapter plugged in? driver loaded?).{RST}")
-        iface = ask("Interface name", current_iface or "wlan0")
-    answers["interface.name"] = iface
-    answers["interface.country"] = ask(
-        "Country code for the regulatory domain (allowed channels, e.g. DE, AT, CH, US)",
-        str(get(values, "interface.country") or "DE"),
-        lambda a: None if re.match(r"^[A-Za-z]{2}$", a) else "Two letters, e.g. DE.",
-    ).upper()
+    answers["interface.name"], state["is_usb"] = ask_interface(str(get(values, "interface.name") or ""))
+    answers["interface.country"] = ask_country(str(get(values, "interface.country") or "DE"))
 
     section("Operation")
     answers["remote_config.enabled"] = ask_yes(
         "Fetch the test configuration (SSIDs, intervals) from the dashboard? Recommended",
         bool(get(values, "remote_config.enabled", True)))
-    answers["auto_update.enabled"] = ask_yes(
-        "Install updates automatically from the git checkout?", bool(get(values, "auto_update.enabled", False)))
-    if answers["auto_update.enabled"]:
-        answers["auto_update.branch"] = ask_choice("Update channel", [
-            ("stable", "stable - released versions (recommended)"),
-            ("main", "main - every change immediately (test devices)"),
-        ], str(get(values, "auto_update.branch") or "stable"))
-    answers["watchdog.enabled"] = ask_yes(
-        "Reboot automatically if the Wi-Fi adapter disappears (USB hotplug watchdog)?",
-        bool(get(values, "watchdog.enabled", False)))
-    answers["display.enabled"] = ask_yes(
-        "Is a NanoHat OLED display with buttons attached?", bool(get(values, "display.enabled", False)))
-    i2c_port = get(values, "display.i2c_port", 0)
-    if answers["display.enabled"] and not Path(f"/dev/i2c-{i2c_port}").exists():
-        # Frisches Armbian: Overlay "i2c0" ist aus, das Display bleibt dann
-        # dunkel und der Dienst loggt nur "I2C device not found".
-        say(f"  {YEL}Warning: /dev/i2c-{i2c_port} does not exist - the I2C bus is not enabled. On Armbian add "
-            f"\"i2c{i2c_port}\" to the overlays= line in /boot/armbianEnv.txt (or use armbian-config) "
-            f"and reboot.{RST}")
+    ask_auto_update(answers, values, bool(get(values, "auto_update.enabled", False)))
+    answers["watchdog.enabled"] = ask_watchdog(bool(get(values, "watchdog.enabled", False)), state["is_usb"])
+    answers["display.enabled"] = ask_display(bool(get(values, "display.enabled", False)),
+                                             get(values, "display.i2c_port", 0))
 
-    section("Summary")
-    for key, value in answers.items():
-        shown = "**** (set)" if key == "server.api_key" else yaml_scalar(value)
-        say(f"  {key:<24} {shown}")
-    if not ask_yes(f"Write these values to {path}?", True):
-        say("Nothing changed.")
-        return 1
+    while True:
+        section("Summary")
+        keys = [k for k in ORDER if k in answers]
+        for i, key in enumerate(keys, 1):
+            shown = "**** (set)" if key == "server.api_key" else yaml_scalar(answers[key])
+            say(f"  {i:>2}) {key:<24} {shown}")
+        if ask_yes(f"Write these values to {path}?", True):
+            break
+        choice = ask(f"Number of the value to change (1-{len(keys)}, Enter = quit without saving)", "",
+                     lambda a: None if not a or (a.isdigit() and 1 <= int(a) <= len(keys))
+                     else f"1-{len(keys)}, or Enter to quit.")
+        if not choice:
+            say("Nothing changed.")
+            return 1
+        if not change(keys[int(choice) - 1], answers, values, state):
+            say("Nothing changed.")
+            return 1
 
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    old_text = path.read_text(encoding="utf-8")
+    lines = old_text.splitlines(keepends=True)
     for key, value in answers.items():
         set_value(lines, key, value)
+    if "".join(lines) == old_text:
+        say(f"  {GRN}No changes{RST} - {path} stays as it is.")
+        return 0
     backup = path.with_name(f"{path.name}.bak.{time.strftime('%Y%m%d%H%M%S')}")
     shutil.copy2(path, backup)
+    # Nur die letzten Sicherungen behalten (Zeitstempel sortieren lexikalisch).
+    for old in sorted(path.parent.glob(f"{path.name}.bak.*"))[:-KEEP_BACKUPS]:
+        old.unlink(missing_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text("".join(lines), encoding="utf-8")
     tmp.chmod(0o600)

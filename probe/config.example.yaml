@@ -45,6 +45,15 @@ remote_config:
   poll_interval_seconds: 300
   cache_path: "/var/lib/wlanmon-probe/remote_config_cache.yaml"
 
+heartbeat:
+  # Lebenszeichen an das Dashboard im festen Takt, auch ohne Messdaten, mit
+  # Systemwerten der Probe (CPU, RAM, Speicher, Temperatur, Uptime, Sende-
+  # Warteschlange). Ändert sich die zentrale Konfiguration, holt die Probe
+  # sie damit sofort statt erst beim nächsten Poll. Wie "scan" normalerweise
+  # im Dashboard gepflegt (Gerät -> Konfiguration), hier nur der Fallback.
+  enabled: true
+  interval_seconds: 60
+
 scan:
   # Nur Fallback-Wert, siehe remote_config oben.
   # Wie oft ein reiner Scan (alle sichtbaren SSIDs/BSSIDs) durchgeführt wird
@@ -98,6 +107,10 @@ connection_tests:
     interface: "eth0"
     duration_seconds: 5
     port: 5201
+    # Hoechstens alle N Minuten (0 = jeder Zyklus). Ohne Eintrag gilt
+    # iperf3_min_interval_minutes. Mehrere Probes am selben iperf3-Server
+    # blockieren sich sonst gegenseitig ("server is busy").
+    min_interval_minutes: 30
 
   # Liste der Netze, die getestet werden sollen. Normalerweise im Dashboard
   # gepflegt (remote_config) - lokal leer, damit eine frisch installierte

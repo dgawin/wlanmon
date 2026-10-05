@@ -2,9 +2,12 @@
 """
 Prueft, ob im lokalen Git-Checkout des Probe-Repos (auf origin/<branch>)
 eine neuere Version vorliegt, und installiert sie automatisch:
-git fetch + git merge --ff-only -> Dateien nach /opt/wlanmon-probe/ kopieren -> pip
-install (falls requirements.txt sich geaendert hat) -> systemctl restart
-wlanmon-probe.
+git fetch + git merge --ff-only -> Dateien nach /opt/wlanmon-probe/ kopieren
+(alle *.py, portals/, requirements.txt, VERSION, wlan_watchdog.sh) -> pip
+install -> Probelauf (import main) -> systemctl restart wlanmon-probe.
+Scheitert der Probelauf, wird der vorherige Stand zurueckgelegt und nicht
+neu gestartet. Auch wenn der Checkout schon aktuell ist, wird geprueft, ob
+die Installation dazu passt, und bei Bedarf nachgezogen.
 
 Wird periodisch von wlanmon-probe-update.timer aufgerufen (Standard alle
 15 Minuten, siehe wlanmon-probe-update.timer). Nur aktiv, wenn
@@ -22,6 +25,7 @@ enthaelt, was auf den Geraeten laufen soll - kein Test-/Feature-Branch.
 
 from __future__ import annotations
 
+import filecmp
 import json
 import os
 import shutil
@@ -45,20 +49,19 @@ STATE_PATH = Path("/var/lib/wlanmon-probe/update_state.json")
 # Wird von main() waehrend des Laufs befuellt und am Ende geschrieben.
 STATE: dict = {}
 
-# Dieselbe Dateiliste wie in setup_wlanmon_probe.sh (ohne wlan_watchdog.sh -
-# das wird unten separat behandelt, wegen +x). Bei neuen Modulen dort UND
-# hier ergaenzen. update_probe.py steht bewusst mit in der eigenen Liste,
-# damit sich das auf /opt/wlanmon-probe/ deployte Update-Skript selbst
-# aktualisiert - sonst bleibt genau diese Datei (die der systemd-Timer
-# tatsaechlich ausfuehrt) fuer immer auf dem Stand der Erstinstallation
-# eingefroren, egal was sich im Git-Repo tut (Vorfall: "VERSION" kam trotz
-# Eintrag hier nicht auf den Geraeten an, weil die laufende Kopie noch die
-# alte Liste ohne "VERSION" hatte).
-FILES = [
-    "main.py", "wifi_ops.py", "sender.py", "queue_store.py",
-    "config_manager.py", "probe_status.py", "display.py", "bound_http.py",
-    "requirements.txt", "VERSION", "update_probe.py",
-]
+# Was nach /opt/wlanmon-probe/ gehoert, ergibt sich aus dem Checkout (siehe
+# installable_files()): alle *.py im Hauptordner und in portals/, dazu diese
+# Dateien. Frueher stand hier eine feste Liste - ein neues Modul kam damit
+# nicht an, main.py startete nicht mehr, und der naechste Lauf meldete
+# "bereits aktuell", weil der Checkout ja aktuell war.
+EXTRA_FILES = ["requirements.txt", "VERSION", "wlan_watchdog.sh"]
+EXECUTABLE = {"wlan_watchdog.sh"}
+# Gesicherter Stand vor dem Kopieren - Ruecksprung, wenn der Probelauf scheitert.
+BACKUP_DIR = INSTALL_DIR / ".previous"
+VENV_PYTHON = INSTALL_DIR / "venv/bin/python3"
+# Gesetzt, wenn sich der Updater nach dem Ersetzen seiner selbst neu gestartet hat;
+# enthaelt die Meldung des unterbrochenen Updates ("Update a -> b installiert").
+REEXEC_ENV = "WLANMON_UPDATER_REEXEC"
 
 
 def log(msg: str) -> None:
@@ -207,22 +210,104 @@ def load_auto_update_config() -> dict | None:
     return cfg.get("auto_update") or {}
 
 
+def installable_files(repo_dir: Path) -> list[str]:
+    """Pfade (relativ) aller Dateien, die aus dem Checkout installiert werden."""
+    names = sorted(p.name for p in repo_dir.glob("*.py"))
+    names += [f"portals/{p.name}" for p in sorted((repo_dir / "portals").glob("*.py"))]
+    names += [n for n in EXTRA_FILES if (repo_dir / n).is_file()]
+    return names
+
+
+def out_of_sync(repo_dir: Path) -> list[str]:
+    """Dateien, die in /opt fehlen oder vom Checkout abweichen."""
+    return [
+        name for name in installable_files(repo_dir)
+        if not (INSTALL_DIR / name).is_file()
+        or not filecmp.cmp(repo_dir / name, INSTALL_DIR / name, shallow=False)
+    ]
+
+
 def sync_files(repo_dir: Path) -> None:
-    for name in FILES:
-        src = repo_dir / name
-        if src.exists():
-            shutil.copy2(src, INSTALL_DIR / name)
-    watchdog_src = repo_dir / "wlan_watchdog.sh"
-    if watchdog_src.exists():
-        dst = INSTALL_DIR / "wlan_watchdog.sh"
-        shutil.copy2(watchdog_src, dst)
-        dst.chmod(0o755)
-    portals_src = repo_dir / "portals"
-    if portals_src.is_dir():
-        portals_dst = INSTALL_DIR / "portals"
-        portals_dst.mkdir(exist_ok=True)
-        for py in portals_src.glob("*.py"):
-            shutil.copy2(py, portals_dst / py.name)
+    """Checkout nach /opt kopieren; vorher den bisherigen Stand nach BACKUP_DIR
+    sichern (fuer restore_backup(), falls der Probelauf scheitert)."""
+    if BACKUP_DIR.exists():
+        shutil.rmtree(BACKUP_DIR)
+    for name in installable_files(repo_dir):
+        dst = INSTALL_DIR / name
+        if dst.is_file():
+            (BACKUP_DIR / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(dst, BACKUP_DIR / name)
+    for name in installable_files(repo_dir):
+        dst = INSTALL_DIR / name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo_dir / name, dst)
+        if name in EXECUTABLE:
+            dst.chmod(0o755)
+
+
+def restore_backup() -> None:
+    """Gesicherten Stand zuruecklegen (neu hinzugekommene Dateien bleiben
+    liegen - der alte Code importiert sie nicht)."""
+    if not BACKUP_DIR.is_dir():
+        return
+    for src in BACKUP_DIR.rglob("*"):
+        if src.is_file():
+            shutil.copy2(src, INSTALL_DIR / src.relative_to(BACKUP_DIR))
+
+
+def smoke_test() -> str | None:
+    """Probelauf vor dem Neustart: main.py mit dem venv der Probe importieren
+    (laedt alle Module, startet aber nichts). Liefert die Fehlermeldung oder None."""
+    if not VENV_PYTHON.exists():
+        return None   # kein venv gefunden - nicht pruefbar, nicht blockieren
+    res = run([str(VENV_PYTHON), "-c", "import main"], cwd=INSTALL_DIR, timeout=60)
+    if res.returncode == 0:
+        return None
+    lines = (res.stderr or res.stdout).strip().splitlines()
+    return lines[-1] if lines else f"Exitcode {res.returncode}"
+
+
+def reexec_if_updater_changed(repo_dir: Path, reason: str = "") -> None:
+    """Ist update_probe.py im Checkout neuer als die laufende Kopie, sie
+    ersetzen und neu starten - der Rest des Laufs passiert dann schon mit der
+    neuen Logik (sonst gaelte jede Aenderung hier erst einen Lauf spaeter).
+    Nur einmal pro Lauf (REEXEC_ENV)."""
+    running = Path(__file__).resolve()
+    new = repo_dir / "update_probe.py"
+    if os.environ.get(REEXEC_ENV) or not new.is_file() or running.parent != INSTALL_DIR.resolve():
+        return
+    if filecmp.cmp(new, running, shallow=False):
+        return
+    shutil.copy2(new, running)
+    log("Updater selbst aktualisiert - Neustart mit der neuen Version")
+    os.environ[REEXEC_ENV] = reason or "1"
+    os.execv(sys.executable, [sys.executable, str(running), *sys.argv[1:]])
+
+
+def install(repo_dir: Path, reason: str) -> int:
+    """Dateien installieren, Abhaengigkeiten nachziehen, Probelauf, Neustart.
+    Scheitert der Probelauf, wird der vorherige Stand zurueckgelegt und die
+    Probe NICHT neu gestartet - sie laeuft mit dem alten Code weiter."""
+    sync_files(repo_dir)
+    pip = run([
+        str(INSTALL_DIR / "venv/bin/pip"), "install", "-q", "-r",
+        str(INSTALL_DIR / "requirements.txt"),
+    ])
+    if pip.returncode != 0:
+        log(f"pip install fehlgeschlagen (Update wird trotzdem versucht): {pip.stderr.strip()}")
+    error = smoke_test()
+    if error is not None:
+        restore_backup()
+        return fail(f"Probelauf fehlgeschlagen, vorheriger Stand wiederhergestellt: {error}")
+    # Status vor dem Neustart schreiben, damit die neu gestartete Probe
+    # gleich den neuen Stand meldet.
+    STATE.update(result="updated", message=reason[:300])
+    write_state()
+    restart = run(["systemctl", "restart", SERVICE_NAME])
+    if restart.returncode != 0:
+        return fail(f"systemctl restart {SERVICE_NAME} fehlgeschlagen: {restart.stderr.strip()}")
+    log(f"{reason} - {SERVICE_NAME} neu gestartet.")
+    return 0
 
 
 def main() -> int:
@@ -275,6 +360,18 @@ def main() -> int:
     if not local or not remote:
         return fail("HEAD/origin nicht ermittelbar, breche ab.")
     if local == remote:
+        reexec_if_updater_changed(repo_dir)
+        # Checkout aktuell - aber passt auch die Installation dazu? Ein frueherer
+        # Lauf (z.B. mit der alten festen Dateiliste) kann Dateien ausgelassen
+        # haben; ohne diese Pruefung bliebe das Geraet so haengen.
+        missing = out_of_sync(repo_dir)
+        if missing:
+            resumed = os.environ.get(REEXEC_ENV, "")
+            if resumed not in ("", "1"):
+                # Fortsetzung eines Updates nach dem Neustart des Updaters.
+                return install(repo_dir, resumed)
+            return install(repo_dir, f"Installation abgeglichen ({', '.join(missing[:5])}"
+                                     f"{' …' if len(missing) > 5 else ''})")
         log("bereits aktuell.")
         STATE.update(result="current")
         return 0
@@ -295,27 +392,11 @@ def main() -> int:
     if pull.returncode != 0:
         return fail(f"git merge --ff-only fehlgeschlagen, breche ab: {pull.stderr.strip()}")
 
-    sync_files(repo_dir)
     STATE.update(commit=remote[:8])
-
-    pip = run([
-        str(INSTALL_DIR / "venv/bin/pip"), "install", "-q", "-r",
-        str(INSTALL_DIR / "requirements.txt"),
-    ])
-    if pip.returncode != 0:
-        log(f"pip install fehlgeschlagen (Update wird trotzdem aktiv): "
-            f"{pip.stderr.strip()}")
-
-    # Status vor dem Neustart schreiben, damit die neu gestartete Probe
-    # gleich den neuen Stand meldet.
-    STATE.update(result="updated", message=f"{local[:8]} -> {remote[:8]}")
-    write_state()
-    restart = run(["systemctl", "restart", SERVICE_NAME])
-    if restart.returncode != 0:
-        return fail(f"systemctl restart {SERVICE_NAME} fehlgeschlagen: {restart.stderr.strip()}")
-
-    log(f"Update auf {remote[:8]} installiert, {SERVICE_NAME} neugestartet.")
-    return 0
+    # Neue Updater-Version zuerst: sie uebernimmt den Rest dieses Laufs.
+    reason = f"Update {local[:8]} -> {remote[:8]} installiert"
+    reexec_if_updater_changed(repo_dir, reason)
+    return install(repo_dir, reason)
 
 
 if __name__ == "__main__":

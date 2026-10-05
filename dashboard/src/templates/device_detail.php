@@ -156,8 +156,15 @@ $renderTestRow = function (array $t) use ($deviceUrl, $canWrite, $captureInfo): 
             <?php if ($cp === null): ?>–
             <?php elseif (($cp['detected'] ?? null) === true): ?>
                 <?php $lg = is_array($cp['login'] ?? null) ? $cp['login'] : null; ?>
-                <span class="pill <?= ($lg['ok'] ?? false) ? 'pill-ok' : 'pill-warn' ?>">
-                    <i class="fa-solid fa-triangle-exclamation"></i> <?= te('Portal erkannt') ?>
+                <?php
+                // Ohne eingerichteten Login ist ein Portal erwartbar (Gastnetz) - neutral;
+                // gruen nach erfolgreichem, rot nach fehlgeschlagenem Login.
+                [$portalPill, $portalIcon] = $lg === null
+                    ? ['pill-muted', 'fa-circle-info']
+                    : (!empty($lg['ok']) ? ['pill-ok', 'fa-circle-check'] : ['pill-fail', 'fa-triangle-exclamation']);
+                ?>
+                <span class="pill <?= $portalPill ?>"<?= $lg === null ? ' title="' . te('Captive Portal erkannt, kein automatischer Login eingerichtet') . '"' : '' ?>>
+                    <i class="fa-solid <?= $portalIcon ?>"></i> <?= te('Portal erkannt') ?>
                 </span>
                 <span class="muted">(HTTP <?= e($cp['http_status'] ?? '?') ?>)</span>
                 <?= format_portal_latency($cp) ?>
@@ -287,6 +294,9 @@ foreach ($testsBySsid as $ssid => $series) {
 }
 if (!empty($lanTests)) {
     $tabs[] = ['id' => 'lan', 'label' => __('LAN-Durchsatz'), 'dot' => null];
+}
+if ($health !== null || !empty($healthSeries['labels'])) {
+    $tabs[] = ['id' => 'system', 'label' => __('System'), 'dot' => null];
 }
 $tabs[] = ['id' => 'scans', 'label' => __('Scans'), 'dot' => null];
 ?>
@@ -429,7 +439,7 @@ $tabs[] = ['id' => 'scans', 'label' => __('Scans'), 'dot' => null];
             <?php if ($tab['dot'] !== null): ?>
                 <span class="status-dot status-<?= e($tab['dot']) ?>"></span>
             <?php else: ?>
-                <i class="fa-solid <?= ['lan' => 'fa-ethernet', 'verlauf' => 'fa-chart-line'][$tab['id']] ?? 'fa-magnifying-glass' ?>"></i>
+                <i class="fa-solid <?= ['lan' => 'fa-ethernet', 'verlauf' => 'fa-chart-line', 'system' => 'fa-microchip'][$tab['id']] ?? 'fa-magnifying-glass' ?>"></i>
             <?php endif; ?>
             <?= e($tab['label']) ?>
         </button>
@@ -1036,6 +1046,151 @@ window.tabInit = {};
 </section>
 <?php endif; ?>
 
+<?php if ($health !== null || !empty($healthSeries['labels'])): ?>
+<section class="tab-panel" id="tab-system" role="tabpanel" hidden>
+<h2><span><i class="fa-solid fa-microchip"></i> <?= te('Systemwerte') ?></span></h2>
+<?php
+// Warnstufe eines Werts: orange ab $warn, rot ab $fail (null = keine Stufe).
+$healthLevel = static fn(?float $v, float $warn, ?float $fail = null): string
+    => $v === null ? '' : (($fail !== null && $v >= $fail) ? 'fail' : ($v >= $warn ? 'warn' : ''));
+$hbAge = !empty($device['heartbeat_at']) ? max(0, time() - (int) strtotime($device['heartbeat_at'] . ' UTC')) : null;
+$fmtAge = static fn(int $s): string => $s < 120 ? __('vor %d s', $s) : ($s < 7200 ? __('vor %d min', intdiv($s, 60)) : __('vor %d h', intdiv($s, 3600)));
+$fmtUptime = static function (float $sec): string {
+    $sec = (int) $sec;
+    $d = intdiv($sec, 86400);
+    $h = intdiv($sec % 86400, 3600);
+    $m = intdiv($sec % 3600, 60);
+    return $d > 0 ? __('%d T %d h', $d, $h) : ($h > 0 ? __('%d h %d min', $h, $m) : __('%d min', $m));
+};
+$h = $health ?? [];
+?>
+<p class="muted">
+    <?= te('Letzter Heartbeat:') ?>
+    <?php if ($hbAge !== null): ?>
+        <span class="<?= $hbAge > 600 ? 'warn' : '' ?>" title="<?= e(format_local($device['heartbeat_at'], 'd.m.Y H:i:s')) ?>"><?= e($fmtAge($hbAge)) ?></span>
+    <?php else: ?>
+        <?= te('noch keiner') ?>
+    <?php endif; ?>
+    · <?= te('Verlauf: höchstens ein Punkt alle 5 Minuten') ?>
+</p>
+<?php if ($health !== null): ?>
+<div class="kpi-row">
+    <div class="kpi-tile">
+        <span class="kpi-label"><i class="fa-solid fa-temperature-half"></i> <?= te('Temperatur') ?></span>
+        <span class="kpi-value <?= $healthLevel($h['temperature_c'] ?? null, 70, 80) ?>">
+            <?= isset($h['temperature_c']) ? e(number_format((float) $h['temperature_c'], 1)) . ' °C' : '–' ?>
+        </span>
+    </div>
+    <div class="kpi-tile">
+        <span class="kpi-label"><i class="fa-solid fa-microchip"></i> <?= te('CPU') ?></span>
+        <span class="kpi-value <?= $healthLevel($h['cpu_percent'] ?? null, 90) ?>">
+            <?= isset($h['cpu_percent']) ? e(round((float) $h['cpu_percent'])) . ' %' : '–' ?>
+        </span>
+        <?php if (isset($h['load'])): ?>
+            <span class="muted" title="<?= te('Durchschnittliche Last über 1, 5 und 15 Minuten') ?>"><?= te('Last') ?> <?= e(implode(' / ', array_map(fn($v) => number_format((float) $v, 2), $h['load']))) ?><?= isset($h['cpu_count']) ? ' · ' . te('%d Kerne', (int) $h['cpu_count']) : '' ?></span>
+        <?php endif; ?>
+    </div>
+    <div class="kpi-tile">
+        <span class="kpi-label"><i class="fa-solid fa-memory"></i> <?= te('Arbeitsspeicher') ?></span>
+        <span class="kpi-value <?= $healthLevel($h['mem_used_percent'] ?? null, 90, 95) ?>">
+            <?= isset($h['mem_used_percent']) ? e(round((float) $h['mem_used_percent'])) . ' %' : '–' ?>
+        </span>
+        <?php if (isset($h['mem_total_mb'], $h['mem_available_mb'])): ?>
+            <span class="muted"><?= te('%s von %s MB frei', e(round((float) $h['mem_available_mb'])), e(round((float) $h['mem_total_mb']))) ?></span>
+        <?php endif; ?>
+    </div>
+    <div class="kpi-tile">
+        <span class="kpi-label"><i class="fa-solid fa-hard-drive"></i> <?= te('Speicherplatz') ?></span>
+        <span class="kpi-value <?= $healthLevel($h['disk_used_percent'] ?? null, 85, 95) ?>">
+            <?= isset($h['disk_used_percent']) ? e(round((float) $h['disk_used_percent'])) . ' %' : '–' ?>
+        </span>
+        <?php if (isset($h['disk_free_mb'], $h['disk_total_mb'])): ?>
+            <span class="muted"><?= te('%s von %s GB frei', e(number_format((float) $h['disk_free_mb'] / 1024, 1)), e(number_format((float) $h['disk_total_mb'] / 1024, 1))) ?></span>
+        <?php endif; ?>
+    </div>
+    <div class="kpi-tile">
+        <span class="kpi-label"><i class="fa-solid fa-clock"></i> <?= te('Laufzeit') ?></span>
+        <span class="kpi-value"><?= isset($h['uptime_seconds']) ? e($fmtUptime((float) $h['uptime_seconds'])) : '–' ?></span>
+    </div>
+    <div class="kpi-tile">
+        <span class="kpi-label"><i class="fa-solid fa-inbox"></i> <?= te('Nicht übertragen') ?></span>
+        <span class="kpi-value <?= $healthLevel($h['queue_unsent'] ?? null, 100) ?>" title="<?= te('Messungen in der Warteschlange der Probe, die das Dashboard noch nicht erreicht haben') ?>">
+            <?= isset($h['queue_unsent']) ? e((int) $h['queue_unsent']) : '–' ?>
+        </span>
+    </div>
+    <?php if (isset($h['throttled']) || isset($h['power_source']) || isset($h['hat']) || isset($h['ext5v_volts'])):
+        // Raspberry Pi: Bitmaske von "vcgencmd get_throttled" - Bits 0-3 jetzt, 16-19 seit dem Start.
+        $thr = (int) ($h['throttled'] ?? 0);
+        $thrNames = [0 => __('Unterspannung'), 1 => __('Takt begrenzt'), 2 => __('gedrosselt'), 3 => __('Temperaturgrenze')];
+        $thrNow = array_values(array_filter($thrNames, fn($b) => ($thr >> $b) & 1, ARRAY_FILTER_USE_KEY));
+        $thrPast = array_values(array_filter($thrNames, fn($b) => ($thr >> ($b + 16)) & 1, ARRAY_FILTER_USE_KEY));
+        ?>
+    <div class="kpi-tile">
+        <span class="kpi-label"><i class="fa-solid fa-bolt"></i> <?= te('Stromversorgung') ?></span>
+        <?php if (($h['power_source'] ?? null) === 'poe_hat'): ?>
+            <span class="kpi-value kpi-value-small"><i class="fa-solid fa-ethernet"></i> <?= te('PoE (HAT)') ?></span>
+        <?php endif; ?>
+        <?php if (isset($h['throttled'])): ?>
+        <span class="kpi-value kpi-value-small <?= $thrNow ? 'fail' : ($thrPast ? 'warn' : 'ok') ?>">
+            <?= $thrNow ? e(implode(', ', $thrNow)) : ($thrPast ? te('seit dem Start: %s', implode(', ', $thrPast)) : te('in Ordnung')) ?>
+        </span>
+        <?php endif; ?>
+        <?php if (isset($h['hat'])): ?>
+            <span class="muted" title="<?= te('Aufgesteckte Erweiterungsplatine laut ihrem ID-Speicher') ?>"><?= e($h['hat']) ?></span>
+        <?php endif; ?>
+        <?php if (isset($h['ext5v_volts']) || isset($h['psu_max_current_ma'])): ?>
+            <span class="muted">
+                <?php if (isset($h['ext5v_volts'])): ?>
+                    <span class="<?= (float) $h['ext5v_volts'] < 4.85 ? 'warn' : '' ?>" title="<?= te('Spannung am 5-V-Eingang des Raspberry Pi 5') ?>"><?= e(number_format((float) $h['ext5v_volts'], 2)) ?> V</span>
+                <?php endif; ?>
+                <?php if (isset($h['psu_max_current_ma'])): ?>
+                    · <span title="<?= te('Strom, den die Firmware der Quelle zutraut (USB-PD-Aushandlung, sonst 3 A)') ?>"><?= te('Quelle max. %s A', e(number_format((int) $h['psu_max_current_ma'] / 1000, 1))) ?></span>
+                <?php endif; ?>
+            </span>
+        <?php endif; ?>
+        <?php if (($h['usb_max_current_enable'] ?? null) === false && ($h['wifi_usb'] ?? null) === true
+                  && (int) ($h['psu_max_current_ma'] ?? 3000) <= 3000): ?>
+            <span class="warn"><?= te('USB-Ports auf 600 mA begrenzt – der USB-WLAN-Adapter bekommt unter Last evtl. zu wenig Strom. Liefert das Netzteil bzw. der PoE-HAT 5 A: „sudo rpi-eeprom-config --edit“, dort PSU_MAX_CURRENT=5000, neu starten.') ?></span>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
+
+<?php if (!empty($healthSeries['labels'])): ?>
+<div class="chart-row">
+    <div class="chart-col chart-col-wide">
+        <p class="muted chart-label"><?= te('Verlauf der letzten 24 Stunden') ?></p>
+        <canvas id="healthChart" height="70"></canvas>
+    </div>
+</div>
+<script>
+tabInit['system'] = function () {
+    new Chart(document.getElementById('healthChart'), {
+        type: 'line',
+        data: {
+            labels: <?= json_encode($healthSeries['labels'], JSON_HEX_TAG) ?>,
+            datasets: [
+                { label: <?= tjson('Temperatur (°C)') ?>, data: <?= json_encode($healthSeries['temperature'], JSON_HEX_TAG) ?>, yAxisID: 'temp', borderWidth: 2, spanGaps: true },
+                { label: <?= tjson('CPU (%)') ?>, data: <?= json_encode($healthSeries['cpu'], JSON_HEX_TAG) ?>, yAxisID: 'pct', borderWidth: 1.5, spanGaps: true },
+                { label: <?= tjson('Arbeitsspeicher (%)') ?>, data: <?= json_encode($healthSeries['mem'], JSON_HEX_TAG) ?>, yAxisID: 'pct', borderWidth: 1.5, spanGaps: true },
+                { label: <?= tjson('Speicherplatz (%)') ?>, data: <?= json_encode($healthSeries['disk'], JSON_HEX_TAG) ?>, yAxisID: 'pct', borderWidth: 1.5, spanGaps: true }
+            ]
+        },
+        options: {
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                pct: { position: 'left', min: 0, max: 100, title: { display: true, text: '%' } },
+                temp: { position: 'right', suggestedMin: 30, suggestedMax: 80, grid: { drawOnChartArea: false }, title: { display: true, text: '°C' } }
+            }
+        }
+    });
+};
+</script>
+<?php endif; ?>
+</section>
+<?php endif; ?>
+
 <section class="tab-panel" id="tab-verlauf" role="tabpanel" hidden>
 <h2>
     <i class="fa-solid fa-chart-line"></i> <?= te('Verlauf') ?>
@@ -1446,5 +1601,6 @@ tabInit['verlauf'] = function () { window.wlanmonTimeline.init(<?= json_encode($
 })();
 </script>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

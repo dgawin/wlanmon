@@ -51,10 +51,14 @@ foreach ($statements as $stmt) {
 // Nachgezogene Spalten: Tabelle, Spalte, Definition.
 $migrations = [
     ['devices', 'auto_update', 'LONGTEXT NULL AFTER probe_version'],
+    ['devices', 'health', 'LONGTEXT NULL AFTER auto_update'],
+    ['devices', 'heartbeat_at', 'DATETIME NULL AFTER health'],
     ['users', 'language', 'VARCHAR(5) NULL AFTER role'],
     ['users', 'disabled_at', 'DATETIME NULL AFTER language'],
     ['site_alerting', 'language', 'VARCHAR(5) NULL AFTER schedule_end_hour'],
     ['site_alerting', 'auth_slow_seconds', 'DECIMAL(5,1) NULL AFTER language'],
+    ['site_alerting', 'assoc_slow_seconds', 'DECIMAL(5,1) NULL AFTER auth_slow_seconds'],
+    ['site_alerting', 'dhcp_slow_seconds', 'DECIMAL(5,1) NULL AFTER assoc_slow_seconds'],
 ];
 foreach ($migrations as [$table, $column, $definition]) {
     $check = $pdo->prepare(

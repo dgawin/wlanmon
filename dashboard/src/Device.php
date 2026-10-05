@@ -92,6 +92,82 @@ function device_touch_last_seen(string $id, ?string $probeVersion = null): void
     $stmt->execute([utc_now(), $id]);
 }
 
+/** Hoechstens so oft (Sekunden) landet ein Heartbeat zusaetzlich als Verlaufspunkt (kind "health"). */
+const HEALTH_SAMPLE_SECONDS = 300;
+
+/** Auswahl fuer das Heartbeat-Intervall in der Geraete-Konfiguration (Sekunden). */
+const HEARTBEAT_INTERVALS = [15, 30, 60, 120, 300, 600];
+
+/**
+ * Systemwerte aus einem Heartbeat auf bekannte Felder mit festen Typen und
+ * plausiblen Grenzen reduzieren - der Inhalt kommt vom Geraet.
+ *
+ * @return array<string, mixed>
+ */
+function device_health_clean(array $h): array
+{
+    $num = static function ($v, float $min, float $max): ?float {
+        return is_int($v) || is_float($v) ? max($min, min($max, (float) $v)) : null;
+    };
+    $clean = [
+        'cpu_percent' => $num($h['cpu_percent'] ?? null, 0, 100),
+        'cpu_count' => isset($h['cpu_count']) && is_int($h['cpu_count']) ? max(1, min(1024, $h['cpu_count'])) : null,
+        'mem_total_mb' => $num($h['mem_total_mb'] ?? null, 0, 1e7),
+        'mem_available_mb' => $num($h['mem_available_mb'] ?? null, 0, 1e7),
+        'mem_used_percent' => $num($h['mem_used_percent'] ?? null, 0, 100),
+        'disk_total_mb' => $num($h['disk_total_mb'] ?? null, 0, 1e9),
+        'disk_free_mb' => $num($h['disk_free_mb'] ?? null, 0, 1e9),
+        'disk_used_percent' => $num($h['disk_used_percent'] ?? null, 0, 100),
+        'temperature_c' => $num($h['temperature_c'] ?? null, -40, 150),
+        'uptime_seconds' => $num($h['uptime_seconds'] ?? null, 0, 1e10),
+        'queue_unsent' => $num($h['queue_unsent'] ?? null, 0, 1e9),
+        'throttled' => isset($h['throttled']) && is_int($h['throttled']) ? max(0, min(0xFFFFFFFF, $h['throttled'])) : null,
+    ];
+    // Stromversorgung (Probe ab 1.0.1.55): HAT-Name aus dem Device-Tree, PoE-Stromquelle.
+    if (is_string($h['hat'] ?? null)) {
+        $hat = trim((string) preg_replace('/[^\x20-\x7E]/', '', $h['hat']));
+        $clean['hat'] = $hat !== '' ? substr($hat, 0, 80) : null;
+    }
+    $clean['power_source'] = in_array($h['power_source'] ?? null, ['poe_hat'], true) ? $h['power_source'] : null;
+    $clean['poe_online'] = is_bool($h['poe_online'] ?? null) ? $h['poe_online'] : null;
+    // Raspberry Pi 5 (Probe ab 1.0.1.56): 5-V-Spannung, Strom laut Quelle, USB-Strombegrenzung aufgehoben?
+    $clean['ext5v_volts'] = $num($h['ext5v_volts'] ?? null, 0, 10);
+    $clean['psu_max_current_ma'] = isset($h['psu_max_current_ma']) && is_int($h['psu_max_current_ma'])
+        ? max(0, min(20000, $h['psu_max_current_ma'])) : null;
+    $clean['usb_max_current_enable'] = is_bool($h['usb_max_current_enable'] ?? null) ? $h['usb_max_current_enable'] : null;
+    $clean['wifi_usb'] = is_bool($h['wifi_usb'] ?? null) ? $h['wifi_usb'] : null;
+    if (is_array($h['load'] ?? null)) {
+        $load = array_values(array_filter(array_slice($h['load'], 0, 3), fn($v) => is_int($v) || is_float($v)));
+        $clean['load'] = count($load) === 3 ? array_map(fn($v) => max(0.0, min(1e4, (float) $v)), $load) : null;
+    }
+    return array_filter($clean, fn($v) => $v !== null);
+}
+
+/**
+ * Systemwerte und Zeitpunkt des letzten Heartbeats speichern. Fehlen die
+ * Spalten (aeltere Installation ohne neues schema.sql), einmalig anlegen und
+ * erneut schreiben - wie site_alerting_set() bei neuen Spalten.
+ */
+function device_store_health(string $id, array $health): void
+{
+    $write = static function () use ($id, $health): void {
+        db()->prepare('UPDATE devices SET health = ?, heartbeat_at = ? WHERE id = ?')
+            ->execute([json_encode($health, JSON_UNESCAPED_SLASHES), utc_now(), $id]);
+    };
+    try {
+        $write();
+    } catch (PDOException $e) {
+        foreach (['health' => 'LONGTEXT NULL', 'heartbeat_at' => 'DATETIME NULL'] as $column => $definition) {
+            try {
+                db()->query("SELECT $column FROM devices LIMIT 0");
+            } catch (PDOException $missing) {
+                db()->exec("ALTER TABLE devices ADD COLUMN $column $definition");
+            }
+        }
+        $write();
+    }
+}
+
 /**
  * Vom Probe-Client gemeldeter Auto-Update-Stand (an/aus, Branch, Repo-URL,
  * Checkout-Pfad) in devices.auto_update speichern - nur die bekannten

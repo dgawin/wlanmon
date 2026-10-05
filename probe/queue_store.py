@@ -87,6 +87,11 @@ class QueueStore:
             ).fetchall()
         return [(r[0], r[1], json.loads(r[2])) for r in rows]
 
+    def count_unsent(self) -> int:
+        """Noch nicht uebertragene Eintraege (Systemwerte im Heartbeat)."""
+        with self._lock:
+            return int(self._conn.execute("SELECT COUNT(*) FROM measurements WHERE sent = 0").fetchone()[0])
+
     def mark_sent(self, ids: list[int]) -> None:
         if not ids:
             return

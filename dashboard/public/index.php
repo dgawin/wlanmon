@@ -50,6 +50,12 @@ try {
         exit;
     }
 
+    // ---- Client-facing: Heartbeat mit Systemwerten (sender.py, Probe ab 1.0.1.54) ----
+    if ($method === 'POST' && preg_match('#^/api/v1/devices/([^/]+)/heartbeat$#', $path, $m)) {
+        handle_heartbeat($m[1]);
+        exit;
+    }
+
     // ---- Client-facing: zentrale Config abrufen (config_manager.py) ----
     if ($method === 'GET' && preg_match('#^/api/v1/devices/([^/]+)/config$#', $path, $m)) {
         handle_get_device_config($m[1]);
@@ -444,6 +450,9 @@ function handle_ingest_measurements(): void
     if ($token === null) {
         json_error(401, "Authorization-Header muss 'Bearer <token>' sein");
     }
+    if ((int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > INGEST_MAX_BODY_BYTES) {
+        json_error(413, sprintf('Request zu gross (max. %d MB)', INGEST_MAX_BODY_BYTES / 1024 / 1024));
+    }
 
     $body = read_json_body();
     $deviceId = $body['device_id'] ?? null;
@@ -460,6 +469,14 @@ function handle_ingest_measurements(): void
     $device = device_find($deviceId);
     if ($device === null || !verify_api_key($token, $device['api_key_hash'])) {
         json_error(401, 'Unbekanntes Gerät oder ungültiger API-Key');
+    }
+    if (count($measurements) > INGEST_MAX_BATCH) {
+        json_error(413, sprintf('Zu viele Messungen in einem Request (max. %d, batch_size verkleinern)', INGEST_MAX_BATCH));
+    }
+    if (measurement_count_recent($deviceId, INGEST_RATE_WINDOW_SECONDS) + count($measurements) > INGEST_RATE_MAX_MEASUREMENTS) {
+        header('Retry-After: 60');
+        json_error(429, sprintf('Zu viele Messungen (max. %d in %d Minuten), später erneut senden',
+            INGEST_RATE_MAX_MEASUREMENTS, INGEST_RATE_WINDOW_SECONDS / 60));
     }
 
     $accepted = 0;
@@ -503,6 +520,42 @@ function handle_ingest_measurements(): void
     json_response(['accepted' => $accepted], 201);
 }
 
+/**
+ * Lebenszeichen einer Probe: aktualisiert "zuletzt gesehen" auch ohne
+ * Messdaten, speichert die Systemwerte am Geraet und hoechstens alle
+ * HEALTH_SAMPLE_SECONDS zusaetzlich einen Verlaufspunkt. Die Antwort traegt
+ * eine Kennung der zentralen Config - aendert sie sich, holt die Probe die
+ * Config sofort statt beim naechsten Poll.
+ */
+function handle_heartbeat(string $deviceId): void
+{
+    $token = extract_bearer_token();
+    if ($token === null) {
+        json_error(401, "Authorization-Header muss 'Bearer <token>' sein");
+    }
+    $device = device_find($deviceId);
+    if ($device === null || !verify_api_key($token, $device['api_key_hash'])) {
+        json_error(401, 'Unbekanntes Gerät oder ungültiger API-Key');
+    }
+    $body = read_json_body();
+    $probeVersion = is_string($body['probe_version'] ?? null) ? substr($body['probe_version'], 0, 32) : null;
+    device_touch_last_seen($deviceId, $probeVersion);
+
+    $health = device_health_clean(is_array($body['health'] ?? null) ? $body['health'] : []);
+    if ($health !== []) {
+        device_store_health($deviceId, $health);
+        $last = measurement_last($deviceId, 'health');
+        $lastAt = $last !== null ? strtotime((string) $last['received_at'] . ' UTC') : 0;
+        if (time() - $lastAt >= HEALTH_SAMPLE_SECONDS) {
+            measurement_insert($deviceId, 'health', utc_now(), $health);
+        }
+    }
+    json_response([
+        'ok' => true,
+        'config_version' => !empty($device['config']) ? substr(sha1((string) $device['config']), 0, 16) : 'none',
+    ]);
+}
+
 function handle_get_device_config(string $deviceId): void
 {
     $token = extract_bearer_token();
@@ -535,6 +588,7 @@ function handle_get_device_config(string $deviceId): void
         'scan' => $config['scan'] ?? null,
         'connection_tests' => $config['connection_tests'] ?? null,
         'site' => $device['site_name'] ?? null,
+        'heartbeat' => $config['heartbeat'] ?? null,
     ]);
 }
 
@@ -577,6 +631,14 @@ function handle_set_device_config(string $deviceId): void
     if (isset($body['connection_tests'])) {
         $config['connection_tests'] = $body['connection_tests'];
     }
+    if (is_array($body['heartbeat'] ?? null)) {
+        // Wie im Formular: an/aus und ein Intervall aus der festen Auswahl.
+        $interval = (int) ($body['heartbeat']['interval_seconds'] ?? 60);
+        $config['heartbeat'] = [
+            'enabled' => ($body['heartbeat']['enabled'] ?? true) !== false,
+            'interval_seconds' => in_array($interval, HEARTBEAT_INTERVALS, true) ? $interval : 60,
+        ];
+    }
     audit_log('device', $deviceId, 'config', audit_diff(audit_device_view($oldConfig), audit_device_view($config)));
     device_set_config($deviceId, $config);
     json_response(['status' => 'ok']);
@@ -612,6 +674,12 @@ function handle_set_device_config_via_form(string $deviceId): void
         'scan' => [
             'interval_seconds' => max(1, (int) ($_POST['scan_interval_seconds'] ?? 60)),
         ],
+        // Heartbeat mit Systemwerten (Probe ab 1.0.1.54), Intervall aus fester Auswahl.
+        'heartbeat' => [
+            'enabled' => !empty($_POST['hb_enabled']),
+            'interval_seconds' => in_array((int) ($_POST['hb_interval_seconds'] ?? 60), HEARTBEAT_INTERVALS, true)
+                ? (int) $_POST['hb_interval_seconds'] : 60,
+        ],
         'connection_tests' => [
             'interval_seconds' => max(1, (int) ($_POST['ct_interval_seconds'] ?? 900)),
             'connect_timeout_seconds' => max(1, (int) ($_POST['ct_connect_timeout_seconds'] ?? 30)),
@@ -636,6 +704,10 @@ function handle_set_device_config_via_form(string $deviceId): void
                 'interface' => trim((string) ($_POST['lan_interface'] ?? '')) ?: 'eth0',
                 'duration_seconds' => max(1, (int) ($_POST['lan_duration_seconds'] ?? 5)),
                 'port' => min(65535, max(1, (int) ($_POST['lan_port'] ?? 5201))),
+                // Leer = allgemeiner iperf3-Abstand gilt (Probe ab 1.0.1.53).
+                'min_interval_minutes' => trim((string) ($_POST['lan_min_interval_minutes'] ?? '')) === ''
+                    ? null
+                    : min(10080, max(0, (int) $_POST['lan_min_interval_minutes'])),
             ],
             'targets' => [],
         ],
@@ -1066,6 +1138,7 @@ function handle_zabbix_device_status(string $deviceId): void
         $lanDown = $lanData['download_mbps'] ?? null;
     }
 
+    $zbxHealth = json_decode((string) ($device['health'] ?? ''), true) ?: [];
     $payload = [
         'device_id' => $device['id'],
         'site' => $device['site_name'],
@@ -1083,6 +1156,15 @@ function handle_zabbix_device_status(string $deviceId): void
         'min_iperf3_download_mbps' => $minDownload,
         'lan_iperf3_upload_mbps' => $lanUp,
         'lan_iperf3_download_mbps' => $lanDown,
+        // Systemwerte aus dem letzten Heartbeat (Probe ab 1.0.1.54).
+        'seconds_since_heartbeat' => !empty($device['heartbeat_at'])
+            ? max(0, time() - (int) strtotime($device['heartbeat_at'] . ' UTC')) : null,
+        'temperature_c' => $zbxHealth['temperature_c'] ?? null,
+        'cpu_percent' => $zbxHealth['cpu_percent'] ?? null,
+        'mem_used_percent' => $zbxHealth['mem_used_percent'] ?? null,
+        'disk_used_percent' => $zbxHealth['disk_used_percent'] ?? null,
+        'uptime_seconds' => $zbxHealth['uptime_seconds'] ?? null,
+        'queue_unsent' => $zbxHealth['queue_unsent'] ?? null,
         'connection_tests' => $connectionTests,
     ];
 
@@ -1099,6 +1181,8 @@ function handle_zabbix_device_status(string $deviceId): void
         'last_scan_network_count', 'worst_ping_rtt_ms',
         'max_ping_loss_percent', 'min_iperf3_mbps', 'min_iperf3_download_mbps',
         'lan_iperf3_upload_mbps', 'lan_iperf3_download_mbps',
+        'seconds_since_heartbeat', 'temperature_c', 'cpu_percent', 'mem_used_percent',
+        'disk_used_percent', 'uptime_seconds', 'queue_unsent',
     ] as $key) {
         if ($payload[$key] === null) {
             unset($payload[$key]);
@@ -1116,6 +1200,27 @@ function render_dashboard(array $user): void
         fn(array $d): bool => user_can_access_site($user, isset($d['site_id']) ? (int) $d['site_id'] : null)
     ));
     $rows = [];
+    // Zeit-Schwellen je Standort (Alarmierungsseite) - faerben die Ø-Zeiten
+    // in der Liste: 802.1X ist zugleich die Schwelle der Alarmregel "802.1X
+    // langsam", Assoziation und DHCP sind reine Anzeige. Keine festen Grenzen,
+    // weil sie vom Standort abhaengen (Cloud-RADIUS, DHCP-Server, Scanzeit
+    // des Adapters). Ein Lookup je Standort.
+    $slowBySite = [];
+    foreach ($devices as $d) {
+        $siteId = isset($d['site_id']) ? (int) $d['site_id'] : null;
+        if ($siteId !== null && !array_key_exists($siteId, $slowBySite)) {
+            try {
+                $sa = site_alerting_get($siteId);
+            } catch (PDOException $e) {
+                $sa = null;
+            }
+            $slowBySite[$siteId] = [];
+            foreach (['assoc', 'auth', 'dhcp'] as $kind) {
+                $v = isset($sa[$kind . '_slow_seconds']) ? (float) $sa[$kind . '_slow_seconds'] : 0.0;
+                $slowBySite[$siteId][$kind] = $v > 0 ? $v : null;
+            }
+        }
+    }
     foreach ($devices as $d) {
         $lastScan = measurement_last($d['id'], 'scan');
         // Dieselben 100 Tests wie auf der Geräteseite, damit die Kennzahlen
@@ -1136,6 +1241,7 @@ function render_dashboard(array $user): void
             'test_summary' => connection_test_summary($tests),
             'network_count' => $networkCount,
             'online' => device_is_online($d['last_seen_at'] ?? null),
+            'slow_seconds' => isset($d['site_id']) ? ($slowBySite[(int) $d['site_id']] ?? []) : [],
         ];
     }
     $deletedDevice = isset($_GET['deleted']) ? (string) $_GET['deleted'] : null;
@@ -1199,6 +1305,19 @@ function render_device_detail(array $device): void
         }
     }
     $captureInfo = captures_existing($deviceId, $captureIds);
+
+    // Systemwerte (Heartbeat, Probe ab 1.0.1.54): aktueller Stand am Geraet,
+    // Verlauf aus den hoechstens alle 5 min gespeicherten Punkten (24 h).
+    $health = json_decode((string) ($device['health'] ?? ''), true) ?: null;
+    $healthSeries = ['labels' => [], 'temperature' => [], 'cpu' => [], 'mem' => [], 'disk' => []];
+    foreach (array_reverse(measurement_list($deviceId, 'health', 288)) as $h) {
+        $hd = json_decode((string) $h['data'], true) ?: [];
+        $healthSeries['labels'][] = format_local((string) ($h['client_timestamp'] ?? $h['received_at']), 'd.m. H:i');
+        $healthSeries['temperature'][] = $hd['temperature_c'] ?? null;
+        $healthSeries['cpu'][] = $hd['cpu_percent'] ?? null;
+        $healthSeries['mem'][] = $hd['mem_used_percent'] ?? null;
+        $healthSeries['disk'][] = $hd['disk_used_percent'] ?? null;
+    }
 
     // LAN-Zeitreihe chronologisch aufsteigend fuer das Diagramm.
     $lanSeries = ['labels' => [], 'upload' => [], 'download' => []];
@@ -1619,11 +1738,18 @@ function site_alerting_from_post(): array
         'schedule_start_hour' => min(23, max(0, (int) ($_POST['schedule_start_hour'] ?? 8))),
         'schedule_end_hour' => min(24, max(1, (int) ($_POST['schedule_end_hour'] ?? 20))),
         'language' => isset(WLANMON_LANGS[$_POST['language'] ?? '']) ? $_POST['language'] : 'de',
-        // Leer oder 0 = Regel aus.
-        'auth_slow_seconds' => (float) str_replace(',', '.', (string) ($_POST['auth_slow_seconds'] ?? '')) > 0
-            ? min(999.9, round((float) str_replace(',', '.', (string) $_POST['auth_slow_seconds']), 1))
-            : null,
+        // Leer oder 0 = Regel aus bzw. keine Faerbung.
+        'auth_slow_seconds' => post_seconds_threshold('auth_slow_seconds'),
+        'assoc_slow_seconds' => post_seconds_threshold('assoc_slow_seconds'),
+        'dhcp_slow_seconds' => post_seconds_threshold('dhcp_slow_seconds'),
     ];
+}
+
+/** Sekunden-Schwelle aus dem Formular (Komma oder Punkt), leer/0 = null, max. 999,9. */
+function post_seconds_threshold(string $field): ?float
+{
+    $value = (float) str_replace(',', '.', (string) ($_POST[$field] ?? ''));
+    return $value > 0 ? min(999.9, round($value, 1)) : null;
 }
 
 function render_site_alerting(int $siteId, ?array $testResult = null): void
@@ -1658,6 +1784,8 @@ function render_site_alerting(int $siteId, ?array $testResult = null): void
             'schedule_end_hour' => 20,
             'language' => 'de',
             'auth_slow_seconds' => null,
+            'assoc_slow_seconds' => null,
+            'dhcp_slow_seconds' => null,
         ];
     }
     $settingsSaved = isset($_GET['saved']);

@@ -112,5 +112,6 @@ $pwField = function (string $name, bool $isSet, string $placeholder = ''): void 
 })();
 </script>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

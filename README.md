@@ -4,28 +4,30 @@
 
 # wlanmon
 
-wlanmon monitors Wi-Fi quality and availability across multiple sites. Small
-Linux devices (NanoPi, Raspberry Pi) periodically scan the Wi-Fi environment
-and test connections to configured SSIDs (association, DHCP, reachability,
-optionally iperf3). The results end up in a central web dashboard with
-history, spectrum view and alerting.
+wlanmon tells you how your Wi-Fi is doing at every site, before your users do.
+
+Small Linux boards (Raspberry Pi, NanoPi) sit in your offices and behave like a
+client: they scan the air, connect to your SSIDs and measure how long each step
+takes – association, 802.1X, DHCP, reachability and, if you like, throughput
+with iperf3. Everything lands in one web dashboard with history, a spectrum
+view and alerts by e-mail or Telegram.
 
 Website: [wlanmon.com](https://wlanmon.com)
 
-| Folder | Contents |
+| Folder | What's inside |
 |---|---|
-| [`probe/`](probe/) | Probe client (Python) for the measurement devices, including setup script and auto-update – see [probe/README.md](probe/README.md) |
-| [`dashboard/`](dashboard/) | Server and web dashboard (PHP + MySQL/MariaDB), classic or as a Docker stack – see [dashboard/README.md](dashboard/README.md) |
+| [`probe/`](probe/) | The software for the measuring devices (Python), with setup script and automatic updates – [probe/README.md](probe/README.md) |
+| [`dashboard/`](dashboard/) | Server and web dashboard (PHP + MySQL/MariaDB), installed classically or as a Docker stack – [dashboard/README.md](dashboard/README.md) |
 | [`branding/`](branding/) | Logo and icon (SVG) |
 
-## Quick start
+## Getting started
 
-1. Set up the dashboard – easiest as a Docker stack, see
-   [dashboard/README.md, section "Docker"](dashboard/README.md#docker).
-2. Add a device in the dashboard; it gives you the ready-made `server`
-   configuration including the API key for the probe.
-3. Set up the probe (only `git` is needed beforehand, the setup script
-   installs everything else):
+1. Set up the dashboard. Docker is the quickest way:
+   [dashboard/README.md, "Docker"](dashboard/README.md#docker).
+2. Add a device in the dashboard and note its device ID and API key – the key
+   is shown only once.
+3. Install the probe. All you need beforehand is `git`; the setup script takes
+   care of the rest and then walks you through the configuration:
 
    ```bash
    sudo apt update && sudo apt install -y git
@@ -33,14 +35,19 @@ Website: [wlanmon.com](https://wlanmon.com)
    sudo ./setup_wlanmon_probe.sh
    ```
 
-   Details (hardware, Wi-Fi adapters, configuration) in
+   Hardware, Wi-Fi adapters and all settings are explained in
    [probe/README.md](probe/README.md).
+
+## Tested hardware
+
+Raspberry Pi 5 and 3 B, NanoPi NEO2/NEO3, with USB adapters or built-in Wi-Fi –
+details in the [table in the probe README](probe/README.md#tested-hardware).
 
 ## Branches
 
-- `main` – current development state
-- `stable` – released state; the auto-updates of probe and dashboard pull from
-  here by default
+- `main` – work in progress
+- `stable` – released versions; probes and dashboard update from here by
+  default
 
 ## License
 

@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS devices (
     -- repo_dir, reported_at), siehe device_store_auto_update(). NULL, bis
     -- ein Client ab 1.0.1.2 gesendet hat.
     auto_update   LONGTEXT NULL,
+    -- Systemwerte laut letztem Heartbeat der Probe (JSON: CPU, RAM, Speicher,
+    -- Temperatur, Uptime, Sende-Warteschlange; siehe device_store_health())
+    -- und dessen Zeitpunkt. NULL bis zum ersten Heartbeat (Probe ab 1.0.1.54).
+    -- Fehlen die Spalten, legt device_store_health() sie an.
+    health        LONGTEXT NULL,
+    heartbeat_at  DATETIME NULL,
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at  DATETIME NULL,
     CONSTRAINT fk_devices_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE SET NULL
@@ -242,6 +248,11 @@ CREATE TABLE IF NOT EXISTS site_alerting (
     -- Wert in Sekunden. NULL = Regel aus. Fehlt die Spalte, legt
     -- site_alerting_set() sie an.
     auth_slow_seconds           DECIMAL(5,1) NULL,
+    -- Nur Anzeige (Geraeteliste, keine Alarmregel): Ø Assoziationszeit (inkl.
+    -- Scan) bzw. Ø DHCP-Zeit ueber dieser Schwelle in Sekunden = orange.
+    -- NULL = keine Faerbung. Fehlen die Spalten, legt site_alerting_set() sie an.
+    assoc_slow_seconds          DECIMAL(5,1) NULL,
+    dhcp_slow_seconds           DECIMAL(5,1) NULL,
     updated_at                  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_site_alerting_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

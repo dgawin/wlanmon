@@ -33,6 +33,28 @@ function measurement_find(int $id, string $deviceId): ?array
     return $row ?: null;
 }
 
+/*
+ * Grenzen fuer /api/v1/measurements. Eine Probe schickt hoechstens
+ * batch_size (Vorgabe 50) Messungen je flush_interval_seconds (Vorgabe 15 s),
+ * also ~1000 in 5 Minuten, auch beim Abarbeiten einer langen Warteschlange
+ * nach einem Ausfall. Die Grenzen liegen deutlich darueber und greifen nur
+ * bei einer fehlkonfigurierten oder missbrauchten Probe (geleakter API-Key).
+ * Abgelehnte Batches bleiben in der Warteschlange der Probe und kommen im
+ * naechsten Zyklus erneut - es geht nichts verloren.
+ */
+const INGEST_MAX_BODY_BYTES = 8 * 1024 * 1024;
+const INGEST_MAX_BATCH = 500;
+const INGEST_RATE_WINDOW_SECONDS = 300;
+const INGEST_RATE_MAX_MEASUREMENTS = 3000;
+
+/** Anzahl der Messungen, die ein Geraet in den letzten $seconds Sekunden geliefert hat (Rate-Limit). */
+function measurement_count_recent(string $deviceId, int $seconds): int
+{
+    $stmt = db()->prepare('SELECT COUNT(*) FROM measurements WHERE device_id = ? AND received_at >= ?');
+    $stmt->execute([$deviceId, gmdate('Y-m-d H:i:s', time() - $seconds)]);
+    return (int) $stmt->fetchColumn();
+}
+
 function measurement_last(string $deviceId, string $kind): ?array
 {
     $stmt = db()->prepare(

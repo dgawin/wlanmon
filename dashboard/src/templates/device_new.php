@@ -51,5 +51,6 @@
     <button type="submit"><i class="fa-solid fa-plus"></i> <?= te('Anlegen') ?></button>
 </form>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

@@ -213,12 +213,10 @@ LOG_DIR="/var/log/wlanmon-probe"
 
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
 
-cp "$SCRIPT_DIR"/main.py "$SCRIPT_DIR"/wifi_ops.py "$SCRIPT_DIR"/sender.py \
-   "$SCRIPT_DIR"/queue_store.py "$SCRIPT_DIR"/config_manager.py \
-   "$SCRIPT_DIR"/probe_status.py "$SCRIPT_DIR"/display.py \
-   "$SCRIPT_DIR"/bound_http.py "$SCRIPT_DIR"/wlan_watchdog.sh \
-   "$SCRIPT_DIR"/requirements.txt "$SCRIPT_DIR"/VERSION \
-   "$SCRIPT_DIR"/update_probe.py "$INSTALL_DIR/"
+# Alle Module statt einer festen Liste - dieselbe Auswahl wie
+# installable_files() in update_probe.py, damit neue Module ohne Zutun ankommen.
+cp "$SCRIPT_DIR"/*.py "$SCRIPT_DIR"/wlan_watchdog.sh \
+   "$SCRIPT_DIR"/requirements.txt "$SCRIPT_DIR"/VERSION "$INSTALL_DIR/"
 # Captive-Portal-Login-Module (Paket)
 mkdir -p "$INSTALL_DIR/portals"
 cp "$SCRIPT_DIR"/portals/*.py "$INSTALL_DIR/portals/"
@@ -341,6 +339,37 @@ if [ "$WIZARD" != "no" ] && [ -t 0 ] && [ -t 1 ]; then
         case "$answer" in j|J|y|Y) run_wizard ;; esac
     fi
 fi
+
+# ---------------------------------------------------------------------
+# NetworkManager vom Test-Interface fernhalten
+# ---------------------------------------------------------------------
+# Raspberry Pi OS (und manche Armbian-Images) verwalten WLAN per
+# NetworkManager; dessen eigener wpa_supplicant blockiert dann unseren
+# ("nl80211: kernel reports: Match already configured", keine Assoziation).
+# Dauerhaft als "unmanaged" eintragen - nur das Test-Interface aus
+# config.yaml, und nicht, wenn es im NetworkManager verbunden ist (Uplink).
+# Die Probe prueft das zusaetzlich bei jedem Start (wifi_ops.py).
+ensure_networkmanager_ignores_test_iface() {
+    systemctl is-active --quiet NetworkManager 2>/dev/null || return 0
+    local iface conf state
+    iface=$("$VENV_DIR/bin/python3" -c 'import sys, yaml; print(((yaml.safe_load(open(sys.argv[1])) or {}).get("interface") or {}).get("name") or "wlan0")' "$CONFIG_DIR/config.yaml" 2>/dev/null || echo wlan0)
+    state=$(nmcli -t -f DEVICE,STATE device status 2>/dev/null | awk -F: -v d="$iface" '$1 == d {print $2}') || true
+    if [ "$state" = "connected" ]; then
+        log "WARNING: $iface is connected in NetworkManager (uplink?) - not taken over. The tests need a dedicated interface."
+        return 0
+    fi
+    conf=/etc/NetworkManager/conf.d/99-wlanmon.conf
+    if grep -qx "unmanaged-devices=interface-name:$iface" "$conf" 2>/dev/null; then
+        log "NetworkManager already leaves $iface alone."
+        return 0
+    fi
+    mkdir -p /etc/NetworkManager/conf.d
+    printf '# WLANMON: test interface is controlled by the probe (setup_wlanmon_probe.sh)\n[keyfile]\nunmanaged-devices=interface-name:%s\n' "$iface" > "$conf"
+    nmcli general reload conf >/dev/null 2>&1 || systemctl reload NetworkManager || true
+    log "NetworkManager no longer manages $iface ($conf)."
+}
+
+ensure_networkmanager_ignores_test_iface
 
 log ""
 log "Installation complete."

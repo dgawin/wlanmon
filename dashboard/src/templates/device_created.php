@@ -42,5 +42,6 @@ $rotated ??= false;
 <p><a href="/" class="back-link"><i class="fa-solid fa-arrow-left"></i> <?= te('Zur Geräteliste') ?></a></p>
 <?php endif; ?>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

@@ -66,6 +66,13 @@ confirm() {
     [[ "$answer" =~ ^[yYjJ]$ ]]
 }
 
+# Like confirm, but Enter means yes (for the expected next step).
+confirm_yes() {
+    local answer
+    read -r -p "$1 [Y/n] " answer || return 1
+    [[ -z "$answer" || "$answer" =~ ^[yYjJ]$ ]]
+}
+
 # Value from config.yaml by dotted path, e.g. cfg interface.name wlan0
 cfg() {
     "$PY" - "$CONFIG" "$1" "${2:-}" <<'PYEOF' 2>/dev/null
@@ -361,8 +368,12 @@ run_setup_wizard() {
         err "config_wizard.py not found in $REPO_DIR - update the checkout first (sudo wlanmon update)."
         return 1
     fi
+    local before
+    before="$(stat -c %Y "$CONFIG" 2>/dev/null || echo 0)"
     if "$PY" "$wizard" "$CONFIG"; then
-        confirm "Restart the probe service so the new configuration takes effect?" \
+        # Nichts gespeichert (keine Aenderung) -> kein Neustart noetig.
+        [ "$(stat -c %Y "$CONFIG" 2>/dev/null || echo 0)" = "$before" ] && return 0
+        confirm_yes "Restart the probe service so the new configuration takes effect?" \
             && systemctl restart "$SVC" && ok "Restarted."
     fi
 }
@@ -387,7 +398,7 @@ menu_config() {
                 "$editor" "$CONFIG"
                 if "$PY" -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$CONFIG" 2>/dev/null; then
                     ok "YAML is valid."
-                    confirm "Restart the probe service so the change takes effect?" && systemctl restart "$SVC" && ok "Restarted."
+                    confirm_yes "Restart the probe service so the change takes effect?" && systemctl restart "$SVC" && ok "Restarted."
                 else
                     err "YAML error! The file cannot be read like this - please edit it again (backup: $CONFIG.bak.*)."
                 fi

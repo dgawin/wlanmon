@@ -37,12 +37,20 @@ log = logging.getLogger("wlanmon_probe.config_manager")
 # "site" ist nur der Standortname zur Anzeige (Log, OLED), vom Dashboard aus
 # devices.site_id abgeleitet - frueher stand er lokal als device.site in der
 # config.yaml und blieb nach einer Neuinstallation auf dem Vorlagenwert stehen.
-REMOTE_MANAGED_KEYS = ("scan", "connection_tests", "site")
+# "heartbeat" (an/aus, Intervall) ab Probe 1.0.1.54, siehe Heartbeat in sender.py.
+REMOTE_MANAGED_KEYS = ("scan", "connection_tests", "site", "heartbeat")
 
 
 def load_bootstrap(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh)
+
+
+def _managed_subset(cfg: dict) -> dict:
+    """Nur die zentral verwalteten Schluessel, fehlende als None - so sind
+    Server-Antwort und zuletzt geladener Stand vergleichbar, auch wenn ein
+    aelteres Dashboard einen neueren Schluessel (z.B. "heartbeat") nicht kennt."""
+    return {k: cfg.get(k) for k in REMOTE_MANAGED_KEYS}
 
 
 def _config_hash(cfg: dict) -> str:
@@ -166,15 +174,27 @@ class ConfigWatcher(threading.Thread):
         self._enabled = rc_cfg.get("enabled", False)
         self._poll_interval = rc_cfg.get("poll_interval_seconds", 300)
         self._cache_path = rc_cfg.get("cache_path")
-        managed_subset = {
-            k: current_effective_cfg.get(k) for k in REMOTE_MANAGED_KEYS
-        }
-        self._current_hash = _config_hash(managed_subset)
+        # Vergleichsbasis ist der zuletzt vom Server geladene Stand (Cache), nicht
+        # die effektive Config: dort stehen fuer Schluessel, die der Server nicht
+        # liefert, lokale Werte aus config.yaml - der Vergleich ergaebe dann nie
+        # "gleich" und die Probe startete bei jedem Poll neu.
+        cached = _read_cache(self._cache_path) if self._cache_path else None
+        self._current_hash = _config_hash(_managed_subset(cached or current_effective_cfg))
+        # Vom Heartbeat gesetzt, wenn der Server eine geaenderte Konfiguration
+        # meldet: dann sofort abrufen statt bis zum naechsten Poll zu warten.
+        self._wake = threading.Event()
+
+    def check_now(self) -> None:
+        self._wake.set()
 
     def run(self) -> None:
         if not self._enabled:
             return
-        while not self._stop_event.wait(self._poll_interval):
+        while not self._stop_event.is_set():
+            self._wake.wait(self._poll_interval)
+            self._wake.clear()
+            if self._stop_event.is_set():
+                break
             remote_cfg = fetch_remote_config(
                 server_url=self._bootstrap_cfg["server"]["url"],
                 api_key=self._bootstrap_cfg["server"]["api_key"],
@@ -185,7 +205,7 @@ class ConfigWatcher(threading.Thread):
             if not remote_cfg:
                 continue
 
-            new_hash = _config_hash(remote_cfg)
+            new_hash = _config_hash(_managed_subset(remote_cfg))
             if new_hash == self._current_hash:
                 continue
 

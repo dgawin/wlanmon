@@ -54,7 +54,10 @@ function site_alerting_set(int $siteId, array $data): void
     } catch (PDOException $e) {
         // Ältere Installation ohne nachgezogene Spalten: fehlende einmalig
         // anlegen und erneut speichern (wie users.language, siehe lang_set()).
-        foreach (['language' => 'VARCHAR(5) NULL', 'auth_slow_seconds' => 'DECIMAL(5,1) NULL'] as $column => $definition) {
+        foreach ([
+            'language' => 'VARCHAR(5) NULL', 'auth_slow_seconds' => 'DECIMAL(5,1) NULL',
+            'assoc_slow_seconds' => 'DECIMAL(5,1) NULL', 'dhcp_slow_seconds' => 'DECIMAL(5,1) NULL',
+        ] as $column => $definition) {
             try {
                 db()->query("SELECT $column FROM site_alerting LIMIT 0");
             } catch (PDOException $missing) {
@@ -72,8 +75,8 @@ function site_alerting_write(int $siteId, array $data): void
             site_id, enabled, offline_after_minutes, consecutive_test_failures, repeat_after_minutes,
             email_enabled, email_to, telegram_enabled, telegram_chat_id,
             schedule_mode, schedule_days, schedule_start_hour, schedule_end_hour, language,
-            auth_slow_seconds
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            auth_slow_seconds, assoc_slow_seconds, dhcp_slow_seconds
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
             offline_after_minutes = VALUES(offline_after_minutes),
@@ -88,7 +91,9 @@ function site_alerting_write(int $siteId, array $data): void
             schedule_start_hour = VALUES(schedule_start_hour),
             schedule_end_hour = VALUES(schedule_end_hour),
             language = VALUES(language),
-            auth_slow_seconds = VALUES(auth_slow_seconds)'
+            auth_slow_seconds = VALUES(auth_slow_seconds),
+            assoc_slow_seconds = VALUES(assoc_slow_seconds),
+            dhcp_slow_seconds = VALUES(dhcp_slow_seconds)'
     );
     $stmt->execute([
         $siteId,
@@ -106,6 +111,8 @@ function site_alerting_write(int $siteId, array $data): void
         $data['schedule_end_hour'] ?? null,
         isset(WLANMON_LANGS[$data['language'] ?? '']) ? $data['language'] : null,
         $data['auth_slow_seconds'] ?? null,
+        $data['assoc_slow_seconds'] ?? null,
+        $data['dhcp_slow_seconds'] ?? null,
     ]);
 }
 

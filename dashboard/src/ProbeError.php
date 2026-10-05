@@ -143,8 +143,12 @@ function probe_error_part(array $c): ?string
             return __('iperf3: keine Ausgabe');
         case 'iperf3_no_result':
             return __('iperf3: Ausgabe ohne Ergebnis');
+        case 'iperf3_busy':
+            // Andere Probe misst gerade am selben Server - kein Netzfehler.
+            return __('iperf3-Server belegt (%s Versuche), Messung im nächsten Zyklus', $s('attempts'));
         case 'iperf3_failed':
-            // Meldung von iperf3 selbst (englisch), z.B. "the server is busy ..."
+            // Meldung von iperf3 selbst (englisch); "the server is busy ..."
+            // nur noch von Probes vor 1.0.1.52 (danach iperf3_busy).
             return isset($c['attempts'])
                 ? __('%s (%s Versuche im Abstand von %s s)', $s('detail'), $s('attempts'), $s('wait_s'))
                 : $s('detail');

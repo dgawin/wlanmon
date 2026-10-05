@@ -160,5 +160,6 @@ $roleLabels = ['admin' => 'Admin', 'user' => 'User', 'viewer' => 'Viewer'];
 })();
 </script>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

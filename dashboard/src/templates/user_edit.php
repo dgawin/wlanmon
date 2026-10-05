@@ -64,5 +64,6 @@ $roleLabels = ['admin' => __('Admin (voller Zugriff)'), 'user' => __('User (GerÃ
 })();
 </script>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

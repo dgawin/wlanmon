@@ -16,6 +16,7 @@ import http.client
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import signal
@@ -146,9 +147,108 @@ def _freq_to_channel(freq_mhz: int) -> int | None:
     return None
 
 
+RFKILL_DIR = Path("/sys/class/rfkill")
+# Zuletzt gemeldeter Grund, warum das Interface nicht hochkam - nur bei einer
+# Aenderung erneut loggen, sonst stuende er bei jedem Scan im Journal.
+_last_link_error: str | None = None
+
+
+def unblock_wifi() -> list[str]:
+    """Software-Sperre (rfkill) aller WLAN-Adapter aufheben, direkt ueber
+    /sys/class/rfkill - ohne rfkill-Programm, auf Raspberry Pi OS und Armbian
+    gleich. Raspberry Pi OS sperrt das WLAN z.B., solange kein WLAN-Land per
+    raspi-config gesetzt ist; systemd-rfkill stellt eine Sperre nach jedem
+    Neustart wieder her. Eine harte Sperre (Schalter, Firmware) laesst sich
+    so nicht aufheben und wird nur gemeldet. Liefert Hinweise fuers Log."""
+    notes: list[str] = []
+    for dev in sorted(RFKILL_DIR.glob("rfkill*")):
+        try:
+            if (dev / "type").read_text().strip() != "wlan":
+                continue
+            soft = (dev / "soft").read_text().strip()
+            hard = (dev / "hard").read_text().strip()
+        except OSError:
+            continue
+        name = dev.name
+        if hard == "1":
+            notes.append(f"{name}: hart gesperrt (Schalter oder Firmware)")
+        if soft == "1":
+            try:
+                (dev / "soft").write_text("0")
+                notes.append(f"{name}: Software-Sperre aufgehoben")
+            except OSError as exc:
+                notes.append(f"{name}: Software-Sperre nicht aufhebbar ({exc})")
+    return notes
+
+
+def release_from_networkmanager(interface: str) -> None:
+    """Verwaltet der NetworkManager das Test-Interface (Raspberry Pi OS tut das
+    standardmaessig), haengt dessen eigener wpa_supplicant daran: unserer
+    meldet dann "nl80211: kernel reports: Match already configured" und keine
+    Assoziation gelingt (2026-10-05, Pi 5 nach Neustart). Fuer diesen Lauf
+    freigeben (nmcli device set ... managed no); dauerhaft traegt es
+    setup_wlanmon_probe.sh in /etc/NetworkManager/conf.d/99-wlanmon.conf ein.
+    Ist das Interface im NetworkManager verbunden, ist es womoeglich der
+    Uplink - dann nicht anfassen, nur melden."""
+    if not shutil.which("nmcli"):
+        return
+    res = _run(["nmcli", "-t", "-f", "DEVICE,STATE", "device", "status"], check=False, timeout=10)
+    if res.returncode != 0:
+        return
+    for line in res.stdout.splitlines():
+        device, _, state = line.partition(":")
+        if device != interface:
+            continue
+        if state.startswith("unmanaged"):
+            return
+        if state == "connected" or state.startswith("connecting"):
+            log.error(
+                "%s ist im NetworkManager verbunden (%s) - womoeglich der Uplink, daher nicht "
+                "uebernommen. Die Tests brauchen ein eigenes Interface (interface.name in config.yaml).",
+                interface, state,
+            )
+            return
+        done = _run(["nmcli", "device", "set", interface, "managed", "no"], check=False, timeout=10)
+        if done.returncode == 0:
+            log.warning(
+                "NetworkManager verwaltete %s (%s) - fuer die Tests freigegeben. Dauerhaft: "
+                "setup_wlanmon_probe.sh erneut ausfuehren (traegt es in "
+                "/etc/NetworkManager/conf.d/99-wlanmon.conf ein).", interface, state,
+            )
+        else:
+            log.warning("NetworkManager verwaltet %s (%s), Freigabe fehlgeschlagen: %s",
+                        interface, state, done.stderr.strip())
+        return
+
+
+def _link_up(interface: str) -> bool:
+    """Interface aktivieren; schlaegt das fehl, den echten Grund loggen statt
+    still weiterzumachen (sonst sieht man nur das spaetere "Network is down").
+    Bei einer rfkill-Sperre wird sie aufgehoben und erneut versucht."""
+    global _last_link_error
+    res = _run(["ip", "link", "set", interface, "up"], check=False)
+    if res.returncode == 0:
+        _last_link_error = None
+        return True
+    error = res.stderr.strip() or f"Exitcode {res.returncode}"
+    if "rf-kill" in error.lower() or "rfkill" in error.lower():
+        notes = unblock_wifi()
+        log.warning("%s gesperrt (%s) - rfkill: %s", interface, error, "; ".join(notes) or "keine Sperre gefunden")
+        res = _run(["ip", "link", "set", interface, "up"], check=False)
+        if res.returncode == 0:
+            _last_link_error = None
+            log.info("%s nach Aufheben der rfkill-Sperre aktiv", interface)
+            return True
+        error = res.stderr.strip() or f"Exitcode {res.returncode}"
+    if error != _last_link_error:
+        log.warning("%s laesst sich nicht aktivieren: %s", interface, error)
+        _last_link_error = error
+    return False
+
+
 def scan(interface: str, timeout: int = 30) -> list[ScanResult]:
     """Führt einen aktiven Scan über `iw` durch und parst die Ergebnisse."""
-    _run(["ip", "link", "set", interface, "up"], check=False)
+    _link_up(interface)
     result = _scan_with_retry(interface, timeout)
     return _parse_scan_output(result.stdout)
 
@@ -580,6 +680,10 @@ class ConnectionTestResult:
     # True, wenn iperf3 in diesem Test wegen des Mindestabstands
     # (connection_tests.iperf3_min_interval_minutes) bewusst ausgelassen wurde.
     iperf3_deferred: bool = False
+    # True, wenn der iperf3-Server trotz aller Versuche belegt war (andere
+    # Probe misst gerade): kein Messwert, aber auch kein Fehler des Netzes -
+    # der Mindestabstand beginnt dann nicht, der naechste Zyklus misst erneut.
+    iperf3_busy: bool = False
     # Kanalbelegung des verbundenen Kanals aus Sicht der Probe (survey dump,
     # siehe _survey_delta()): {"frequency_mhz", "baseline": {...} zwischen
     # DHCP und Ende des Pings (fast ohne eigenen Verkehr), "iperf3": {...}
@@ -1160,7 +1264,7 @@ def run_connection_test(
                     "Test laeuft mit der aktuellen MAC", ssid, new_mac,
                 )
 
-        _run(["ip", "link", "set", interface, "up"], check=False)
+        _link_up(interface)
         result.mac_address = _read_mac(interface)
 
         # Verwaisten ctrl_interface-Socket aus einem vorherigen, unsauber
@@ -1360,7 +1464,7 @@ def run_connection_test(
             # damit eine Auslastungsspitze der eigenen Messung zuordenbar ist.
             result.iperf3_started_at = _utc_iso()
             result.iperf3_bitrate_mbps = iperf3_bitrate_mbps or None
-            result.iperf3_mbps, result.iperf3_retransmits = _iperf3(
+            result.iperf3_mbps, result.iperf3_retransmits, result.iperf3_busy = _iperf3(
                 interface, ip_addr, iperf3_server, iperf3_duration, port=iperf3_port,
                 bitrate_mbps=iperf3_bitrate_mbps,
             )
@@ -1371,6 +1475,7 @@ def run_connection_test(
                 (
                     result.iperf3_download_mbps,
                     result.iperf3_download_retransmits,
+                    result.iperf3_busy,
                 ) = _iperf3(
                     interface, ip_addr, iperf3_server, iperf3_duration,
                     reverse=True, port=iperf3_port, bitrate_mbps=iperf3_bitrate_mbps,
@@ -1906,12 +2011,15 @@ def _iperf3_measure(
     erzwingt zusätzlich das Ausgangs-Interface, sofern iperf3 es kennt.
 
     Bei "server is busy" (der Server bedient nur einen Test gleichzeitig,
-    z.B. wenn zwei Probes dieselbe NAS testen) wird bis zu dreimal
-    versucht. Die Pause richtet sich nach der Testdauer: eine andere Probe
-    belegt den Server mit Upload + Download (2 x duration) plus Aufbau -
-    feste 5 s haetten bei laengeren Tests aufgegeben, kurz bevor der Server
-    frei wird. Haengt der Server dauerhaft auf "busy", hilft das nicht
-    (dann iperf3 serverseitig mit --idle-timeout betreiben, siehe README).
+    z.B. wenn mehrere Probes dieselbe NAS testen) wird bis zu viermal
+    versucht. Die Pause richtet sich nach der Testdauer (eine andere Probe
+    belegt den Server mit Upload + Download, 2 x duration plus Aufbau) und
+    ist zufaellig: mit fester Pause liefen zwei kollidierende Probes im
+    Gleichschritt und stiessen beim naechsten Versuch wieder zusammen.
+    Bleibt der Server belegt, kommt der Code "iperf3_busy" zurueck - das ist
+    kein Fehler des Netzes, die Aufrufer messen dann im naechsten Zyklus.
+    Haengt der Server dauerhaft auf "busy", hilft das nicht (dann iperf3
+    serverseitig mit --idle-timeout betreiben, siehe README).
     """
     cmd = [
         "iperf3", "-c", server, "-p", str(port), "-t", str(duration),
@@ -1925,8 +2033,7 @@ def _iperf3_measure(
         cmd += ["-b", f"{bitrate_mbps:g}M"]
 
     error: str | None = None
-    attempts = 3
-    busy_wait = duration + 5
+    attempts = 4
     for attempt in range(1, attempts + 1):
         try:
             res = _run(cmd, timeout=duration + 15, check=False)
@@ -1954,13 +2061,11 @@ def _iperf3_measure(
         if "busy" not in error.lower():
             break
         if attempt == attempts:
-            # Fehlertext von iperf3 selbst (englisch) bleibt, die Versuche
-            # stehen im deutschen Text bzw. als Parameter im Code.
-            return (None, None,
-                    f"{error} ({attempts} Versuche im Abstand von {busy_wait} s)"[:200],
-                    _err("iperf3_failed", detail=str(error)[:200], attempts=attempts, wait_s=busy_wait))
+            return (None, None, f"iperf3-Server belegt ({attempts} Versuche)",
+                    _err("iperf3_busy", attempts=attempts))
+        busy_wait = random.uniform(duration + 2, 2 * duration + 10)
         log.info(
-            "iperf3-Server %s:%d belegt (Versuch %d/%d), neuer Versuch in %d s",
+            "iperf3-Server %s:%d belegt (Versuch %d/%d), neuer Versuch in %.0f s",
             server, port, attempt, attempts, busy_wait,
         )
         time.sleep(busy_wait)
@@ -1975,19 +2080,21 @@ def _iperf3(
     reverse: bool = False,
     port: int = 5201,
     bitrate_mbps: float = 0,
-) -> tuple[float | None, int | None]:
+) -> tuple[float | None, int | None, bool]:
     """Durchsatz über das WLAN-Interface (Connection-Test): (Mbit/s,
-    Retransmits). reverse=True misst den Download."""
-    mbps, retransmits, error, _code = _iperf3_measure(
+    Retransmits, Server belegt). reverse=True misst den Download."""
+    mbps, retransmits, error, code = _iperf3_measure(
         server, duration, bind_ip, bind_dev=interface, reverse=reverse, port=port,
         bitrate_mbps=bitrate_mbps,
     )
+    busy = (code or {}).get("code") == "iperf3_busy"
     if error:
-        log.warning(
-            "iperf3 %s (%s -> %s) fehlgeschlagen: %s",
-            "Download" if reverse else "Upload", interface, server, error,
+        (log.info if busy else log.warning)(
+            "iperf3 %s (%s -> %s) %s: %s",
+            "Download" if reverse else "Upload", interface, server,
+            "ausgelassen" if busy else "fehlgeschlagen", error,
         )
-    return mbps, retransmits
+    return mbps, retransmits, busy
 
 
 # --------------------------------------------------------------------------
@@ -2141,7 +2248,7 @@ def _cleanup_connection(
         if res.returncode != 0:
             log.warning("Original-MAC %s liess sich nicht wiederherstellen: %s",
                         restore_mac, res.stderr.strip())
-    _run(["ip", "link", "set", interface, "up"], check=False)
+    _link_up(interface)
     # Kurze Nachlaufzeit, damit der Treiber die Schnittstelle intern
     # vollständig freigibt, bevor der wifi_lock wieder freigegeben wird
     # und z.B. der Scan-Loop sofort einen neuen Scan versucht.

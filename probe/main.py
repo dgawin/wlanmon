@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import logging.handlers
+import random
 import signal
 import socket
 import subprocess
@@ -33,7 +34,7 @@ from config_manager import ConfigWatcher, load_bootstrap, resolve_initial_config
 from display import DisplayLoop
 from probe_status import ProbeStatus
 from queue_store import QueueStore
-from sender import Sender
+from sender import Heartbeat, Sender
 from wifi_ops import (
     DEFAULT_CAPTIVE_PORTAL_URL,
     capture_remove,
@@ -42,10 +43,15 @@ from wifi_ops import (
     interface_ipv4,
     run_connection_test,
     run_lan_iperf3,
+    release_from_networkmanager,
     scan,
+    unblock_wifi,
 )
 
 log = logging.getLogger("wlanmon_probe")
+
+# Eintrag des LAN-Tests in iperf3_last_run.json (daneben stehen die SSIDs).
+LAN_IPERF3_KEY = "__lan__"
 
 
 def setup_logging(cfg: dict) -> None:
@@ -310,6 +316,15 @@ class ConnectionTestLoop(threading.Thread):
         self._lan_interface = lan_cfg.get("interface") or "eth0"
         self._lan_duration = lan_cfg.get("duration_seconds", 5)
         self._lan_port = lan_cfg.get("port", 5201)
+        # Eigener Mindestabstand fuer den LAN-Test (Minuten, 0 = jeder Zyklus);
+        # fehlt er, gilt der allgemeine iperf3-Abstand (Verhalten bis 1.0.1.52).
+        try:
+            lan_minutes = lan_cfg.get("min_interval_minutes")
+            self._lan_min_interval = (
+                max(0, int(lan_minutes)) * 60 if lan_minutes is not None else self._iperf3_min_interval
+            )
+        except (TypeError, ValueError):
+            self._lan_min_interval = self._iperf3_min_interval
 
     def _iperf3_settings_for(self, target: dict) -> tuple[str, int, bool, int]:
         """iperf3-Server/-Dauer/-Download/-Port fuer ein Ziel: eigene Werte,
@@ -338,10 +353,28 @@ class ConnectionTestLoop(threading.Thread):
             return 0.0
 
     def _run_lan_test(self) -> None:
+        # Wie WLAN-iperf3 hoechstens alle iperf3_min_interval_minutes: mehrere
+        # Probes an einem Standort messen sonst in jedem Zyklus gegen dieselbe
+        # NAS und blockieren sich gegenseitig ("server is busy").
+        if not self._iperf3_due(LAN_IPERF3_KEY, self._lan_min_interval):
+            return
+        # Zufaelliger Versatz: Probes, die gleichzeitig neu gestartet wurden
+        # (z.B. Auto-Update), laufen sonst im selben Takt.
+        if self._stop_event.wait(random.uniform(0, 30)):
+            return
         try:
             result = run_lan_iperf3(
                 self._lan_interface, self._lan_server, self._lan_duration, self._lan_port
             )
+            if any(c.get("code") == "iperf3_busy" for c in (result.error_codes or [])):
+                # Kein Fehler des Netzes, nur eine andere Probe am Messen: nicht
+                # melden (das Dashboard behaelt die letzte echte Messung) und
+                # im naechsten Zyklus erneut versuchen.
+                log.info("LAN-iperf3 -> %s: Server belegt, naechster Versuch im naechsten Zyklus",
+                         result.server)
+                return
+            self._last_iperf3[LAN_IPERF3_KEY] = time.time()
+            self._save_iperf3_state()
             payload = {
                 "timestamp": _now_iso(),
                 **dataclasses.asdict(result),
@@ -430,7 +463,8 @@ class ConnectionTestLoop(threading.Thread):
                             capture_remove(result.capture_id)
                         break
                     result.iperf3_deferred = iperf3_deferred
-                    if result.iperf3_started_at:
+                    # Server belegt: nicht als Lauf zaehlen, der naechste Zyklus misst erneut.
+                    if result.iperf3_started_at and not result.iperf3_busy:
                         self._last_iperf3[target["ssid"]] = time.time()
                         self._save_iperf3_state()
                     payload = {
@@ -490,16 +524,18 @@ class ConnectionTestLoop(threading.Thread):
                 self._run_lan_test()
             self._wait_for_next_cycle()
 
-    def _iperf3_due(self, ssid: str) -> bool:
-        """Darf iperf3 fuer diese SSID in diesem Zyklus laufen? Ja ohne
-        Mindestabstand, beim ersten Test nach dem Start, nach Ablauf des
-        Abstands oder wenn der Zyklus per Button 3 ausgeloest wurde."""
-        if self._iperf3_min_interval <= 0 or self._forced_cycle:
+    def _iperf3_due(self, ssid: str, interval: int | None = None) -> bool:
+        """Darf iperf3 fuer diese SSID (bzw. den LAN-Test) in diesem Zyklus
+        laufen? Ja ohne Mindestabstand, beim ersten Test nach dem Start, nach
+        Ablauf des Abstands oder wenn der Zyklus per Button 3 ausgeloest wurde.
+        interval in Sekunden, Standard: der allgemeine iperf3-Abstand."""
+        interval = self._iperf3_min_interval if interval is None else interval
+        if interval <= 0 or self._forced_cycle:
             return True
         last = self._last_iperf3.get(ssid)
         now = time.time()
         # last > now: Uhr wurde zurueckgestellt - lieber messen als tagelang warten.
-        return last is None or last > now or now - last >= self._iperf3_min_interval
+        return last is None or last > now or now - last >= interval
 
     def _load_iperf3_state(self) -> dict[str, float]:
         """Letzte iperf3-Zeitpunkte aus der Datei; leer, wenn sie fehlt oder
@@ -580,6 +616,9 @@ def main() -> None:
     _wait_for_ntp_sync()
     cfg = resolve_initial_config(bootstrap_cfg)
     ensure_regdomain(_country(cfg))
+    for note in unblock_wifi():
+        log.info("WLAN-Sperre beim Start: %s", note)
+    release_from_networkmanager(cfg["interface"]["name"])
 
     device_id = cfg["device"].get("id") or socket.gethostname()
     # Standortname nur zur Anzeige (Log-Zeile unten, OLED-Status in
@@ -606,6 +645,13 @@ def main() -> None:
     def handle_signal(signum, frame):  # noqa: ANN001
         log.info("Signal %s empfangen, fahre herunter...", signum)
         stop_event.set()
+        # Der ConfigWatcher wartet auf sein eigenes Ereignis - wecken, damit er
+        # nicht bis zum naechsten Poll weiterlaeuft (beim Signal vor seinem
+        # Anlegen gibt es noch nichts zu wecken).
+        try:
+            config_watcher.check_now()
+        except NameError:
+            pass
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
@@ -630,6 +676,29 @@ def main() -> None:
     )
     config_watcher = ConfigWatcher(bootstrap_cfg, cfg, stop_event)
 
+    # Heartbeat mit Systemwerten: Standard an, alle 60 s; per zentraler
+    # Konfiguration (Schluessel "heartbeat") je Probe abschalt- und einstellbar.
+    hb_cfg = cfg.get("heartbeat") or {}
+    heartbeat = None
+    if hb_cfg.get("enabled", True):
+        try:
+            hb_interval = min(3600, max(10, int(hb_cfg.get("interval_seconds") or 60)))
+        except (TypeError, ValueError):
+            hb_interval = 60
+        heartbeat = Heartbeat(
+            server_url=cfg["server"]["url"],
+            api_key=cfg["server"]["api_key"],
+            device_id=device_id,
+            probe_version=probe_version,
+            verify_tls=cfg["server"].get("verify_tls", True),
+            request_timeout=cfg["server"].get("request_timeout", 10),
+            interval=hb_interval,
+            stop_event=stop_event,
+            store=store,
+            on_config_changed=config_watcher.check_now,
+            interface=cfg["interface"]["name"],
+        )
+
     display_cfg = cfg.get("display", {})
     display_loop = None
     if display_cfg.get("enabled"):
@@ -640,6 +709,8 @@ def main() -> None:
     scan_loop.start()
     test_loop.start()
     config_watcher.start()
+    if heartbeat is not None:
+        heartbeat.start()
     if display_loop is not None:
         display_loop.start()
 
@@ -654,6 +725,8 @@ def main() -> None:
     scan_loop.join(timeout=10)
     test_loop.join(timeout=10)
     config_watcher.join(timeout=10)
+    if heartbeat is not None:
+        heartbeat.join(timeout=10)
     if display_loop is not None:
         display_loop.join(timeout=10)
     store.close()

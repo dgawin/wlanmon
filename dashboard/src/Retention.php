@@ -16,7 +16,8 @@ require_once __DIR__ . '/Settings.php';
 const RETENTION_DEFAULTS = ['scan_days' => 90, 'test_days' => 365, 'capture_days' => 30];
 
 /** Welche Messarten zu welcher Einstellung gehören. */
-const RETENTION_KINDS = ['scan_days' => ['scan'], 'test_days' => ['connection_test', 'lan_test']];
+// "health" = Systemwerte aus dem Heartbeat (hoechstens alle 5 min ein Punkt) - so kurzlebig wie Scans.
+const RETENTION_KINDS = ['scan_days' => ['scan', 'health'], 'test_days' => ['connection_test', 'lan_test']];
 
 /** Obergrenze für die Eingabe (10 Jahre). */
 const RETENTION_MAX_DAYS = 3650;

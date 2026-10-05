@@ -25,5 +25,6 @@ $auditShowObject = true;
 </p>
 <?php require __DIR__ . '/_audit_list.php'; ?>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>

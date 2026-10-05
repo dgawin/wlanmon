@@ -102,5 +102,6 @@ $isAdmin = (current_user()['role'] ?? null) === 'admin';
 </form>
 <?php endif; ?>
 </main>
+<?php require __DIR__ . '/_footer.php'; ?>
 </body>
 </html>
