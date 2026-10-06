@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS devices (
     -- LONGTEXT statt nativem JSON-Typ für maximale Kompatibilität über
     -- verschiedene MySQL-/MariaDB-Versionen hinweg.
     config        LONGTEXT NULL,
+    -- Konfigurationsprofil (src/Profile.php); NULL = eigene Konfiguration oben.
+    profile_id    INT UNSIGNED NULL,
     -- Vom Probe-Client bei jedem Messwert-Batch mitgeschickt (Feld
     -- "probe_version", siehe handle_ingest_measurements()) - NULL, bis das
     -- erste Mal ein Client mit VERSION-Datei gesendet hat.
@@ -72,7 +74,14 @@ CREATE TABLE IF NOT EXISTS measurements (
     client_timestamp  DATETIME NULL,
     received_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     data              LONGTEXT NOT NULL,  -- vollständiger Messwert-Payload als JSON-Text
-    INDEX idx_device_kind (device_id, kind),
+    -- Gerät + Art + Zeit: Verlauf, Geräteseite und Alarmprüfung fragen fast
+    -- immer "Messungen eines Geräts dieser Art im Zeitraum bzw. die neuesten"
+    -- ab. Ein Index nur auf (device_id, kind) zwang MySQL, dafür jede Zeile des
+    -- Geräts zu lesen (bei ~20.000 Scans je Gerät mehrere Sekunden).
+    -- Bestehende Installation (Tabelle bleibt dabei benutzbar):
+    --   ALTER TABLE measurements ADD INDEX idx_device_kind_time (device_id, kind, received_at), ALGORITHM=INPLACE, LOCK=NONE;
+    --   ALTER TABLE measurements DROP INDEX idx_device_kind;
+    INDEX idx_device_kind_time (device_id, kind, received_at),
     INDEX idx_received_at (received_at),
     CONSTRAINT fk_measurements_device FOREIGN KEY (device_id)
         REFERENCES devices(id) ON DELETE CASCADE
@@ -290,4 +299,39 @@ CREATE TABLE IF NOT EXISTS cirrus_auth_lookups (
     records         MEDIUMTEXT NOT NULL,
     CONSTRAINT fk_cirrus_auth_measurement FOREIGN KEY (measurement_id)
         REFERENCES measurements(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- SSIDs und Konfigurationsprofile (src/Profile.php, Seiten /ssids und
+-- /profiles). Eine SSID = ein Eintrag wie in connection_tests.targets
+-- (Geheimnisse verschluesselt), ein Profil = Testeinstellungen + SSIDs;
+-- devices.profile_id waehlt das Profil (NULL = eigene Konfiguration).
+-- site_id NULL = global. Bestehende Installationen: wird beim ersten
+-- Aufruf der Seiten automatisch angelegt.
+CREATE TABLE IF NOT EXISTS ssids (
+    id          INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    site_id     INT UNSIGNED NULL,
+    label       VARCHAR(100) NULL,
+    target      MEDIUMTEXT NOT NULL,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_ssids_site (site_id),
+    CONSTRAINT fk_ssids_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS profiles (
+    id          INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    site_id     INT UNSIGNED NULL,
+    name        VARCHAR(100) NOT NULL,
+    settings    MEDIUMTEXT NOT NULL,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_profiles_site (site_id),
+    CONSTRAINT fk_profiles_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS profile_ssids (
+    profile_id  INT UNSIGNED NOT NULL,
+    ssid_id     INT UNSIGNED NOT NULL,
+    position    SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (profile_id, ssid_id),
+    CONSTRAINT fk_profile_ssids_profile FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+    CONSTRAINT fk_profile_ssids_ssid FOREIGN KEY (ssid_id) REFERENCES ssids(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

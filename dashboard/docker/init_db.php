@@ -61,6 +61,7 @@ $migrations = [
     ['site_alerting', 'dhcp_slow_seconds', 'DECIMAL(5,1) NULL AFTER assoc_slow_seconds'],
     ['site_alerting', 'eap_abort_rate_pct', 'TINYINT UNSIGNED NULL AFTER dhcp_slow_seconds'],
     ['site_alerting', 'eap_abort_window_minutes', 'SMALLINT UNSIGNED NULL AFTER eap_abort_rate_pct'],
+    ['devices', 'profile_id', 'INT UNSIGNED NULL AFTER config'],
 ];
 foreach ($migrations as [$table, $column, $definition]) {
     $check = $pdo->prepare(
@@ -72,6 +73,24 @@ foreach ($migrations as [$table, $column, $definition]) {
         $pdo->exec("ALTER TABLE `$table` ADD COLUMN `$column` $definition");
         echo "[init_db] Spalte $table.$column ergänzt\n";
     }
+}
+
+// Nachgezogener Index (siehe schema.sql, measurements): ersetzt idx_device_kind.
+$hasIndex = static function (string $table, string $index) use ($pdo): bool {
+    $q = $pdo->prepare(
+        'SELECT COUNT(*) FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?'
+    );
+    $q->execute([$table, $index]);
+    return (int) $q->fetchColumn() > 0;
+};
+if (!$hasIndex('measurements', 'idx_device_kind_time')) {
+    echo "[init_db] Lege Index measurements.idx_device_kind_time an (kann bei vielen Messungen einige Minuten dauern) ...\n";
+    $pdo->exec('ALTER TABLE measurements ADD INDEX idx_device_kind_time (device_id, kind, received_at), ALGORITHM=INPLACE, LOCK=NONE');
+}
+if ($hasIndex('measurements', 'idx_device_kind')) {
+    $pdo->exec('ALTER TABLE measurements DROP INDEX idx_device_kind');
+    echo "[init_db] Alten Index measurements.idx_device_kind entfernt\n";
 }
 
 echo "[init_db] Schema geprüft ($count Anweisungen)\n";

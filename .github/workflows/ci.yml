@@ -13,7 +13,9 @@ jobs:
     defaults:
       run:
         working-directory: dashboard
-    runs-on: ubuntu-latest
+    # Fest statt ubuntu-latest: das wechselt ab 19.10.2026 auf Ubuntu 26, wo
+    # setup-php alte Versionen (7.4) womoeglich nicht mehr anbietet.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -74,7 +76,9 @@ jobs:
     defaults:
       run:
         working-directory: probe
-    runs-on: ubuntu-latest
+    # Fest statt ubuntu-latest: das wechselt ab 19.10.2026 auf Ubuntu 26, wo
+    # setup-php alte Versionen (7.4) womoeglich nicht mehr anbietet.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

@@ -90,6 +90,10 @@ function probe_error_part(array $c): ?string
             return __('WPA3-Passwort vermutlich falsch: der AP lehnt die SAE-Bestätigung ab (Status %s)', $s('status'));
         case 'sae_rejected':
             return __('WPA3 (SAE) vom AP abgelehnt (Schritt %s, Status %s) – SAE-Einstellungen prüfen (H2E, Gruppe, PMF)', $s('step'), $s('status'));
+        case 'auth_no_response':
+            // Probe ab 1.0.1.65: der AP schweigt schon auf die 802.11-Authentifizierung.
+            return __('AP antwortet nicht auf die Anmeldung (%s Versuche an %s, %s) - z. B. MAC-Sperre, Band Steering oder Client-Grenze am AP, oder ein Funkproblem der Probe auf diesem Band',
+                $s('attempts'), $s('bssid'), implode(', ', probe_error_bands([(int) ($c['frequency_mhz'] ?? 0)])));
         case 'auth_rejected':
             return __('Authentifizierung vom AP abgelehnt (Typ %s, Status %s)', $s('auth_type'), $s('status'));
         case 'psk_wrong':

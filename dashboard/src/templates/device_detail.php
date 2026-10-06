@@ -1395,124 +1395,9 @@ tabInit['verlauf'] = function () { window.wlanmonTimeline.init(<?= json_encode($
                 <button type="submit" class="btn-remove btn-small"><i class="fa-solid fa-trash-can"></i> <?= te('Diesen Scan löschen') ?></button>
             </form>
             <?php endif; ?>
-            <div class="table-scroll">
-            <table class="scan-table">
-                <thead>
-                    <tr>
-                        <th data-sort="ssid">SSID</th>
-                        <th data-sort="bssid">BSSID</th>
-                        <th data-sort="signal" data-dir="desc">Signal</th>
-                        <th data-sort="band">Band</th>
-                        <th data-sort="channel"><?= te('Kanal') ?></th>
-                        <th data-sort="gen" title="<?= te('Wi-Fi-Generation und Kanalbreite laut Beacon (HT/VHT/HE/EHT)') ?>"><?= te('Standard') ?></th>
-                        <th data-sort="security" title="<?= te('Sicherheit laut RSN-Element (Authentifizierung, PMF = Protected Management Frames)') ?>"><?= te('Sicherheit') ?></th>
-                        <th title="<?= te('Roaming-Unterstützung: 11k Radio Measurement (NR = Neighbor Report), 11v BSS Transition, 11r Fast Transition') ?>">Roaming</th>
-                        <th data-sort="stations" title="<?= te('Assoziierte Clients laut BSS-Load-Element des AP') ?>">Clients</th>
-                        <th data-sort="util" title="<?= te('Kanalauslastung laut BSS-Load-Element (QBSS) des AP') ?>"><?= te('Auslastung (AP)') ?></th>
-                        <?php if ($cirrusEnabled): ?>
-                        <th data-sort="cirrus" title="<?= te('Kanalauslastung desselben AP-Radios laut OmniVista Cirrus (letzter Sync)') ?>"><?= te('Auslastung (Cirrus)') ?></th>
-                        <?php endif; ?>
-                    </tr>
-                </thead>
-                <tbody>
-                <?php foreach ($networks as $n):
-                    [$band, $bandLabel] = $bandFromFrequency($n['frequency_mhz'] ?? null);
-                    $signalRaw = $n['signal_dbm'] ?? '';
-                    $channelRaw = $n['channel'] ?? '';
-                    // Nur vorhanden, wenn der AP ein BSS-Load-Element sendet
-                    // (und erst ab der Probe-Version mit QBSS-Auswertung).
-                    $stationsRaw = $n['station_count'] ?? '';
-                    $utilRaw = $n['channel_utilization_pct'] ?? '';
-                    // Aktueller Cirrus-Stand (letzter Sync), nicht der Wert zum
-                    // Zeitpunkt dieses Scans - bei älteren Scans also nur grob
-                    // vergleichbar, siehe Tooltip mit dem Messzeitpunkt.
-                    $cirrusRadio = $cirrusEnabled
-                        ? cirrus_lookup_radio((string) ($n['bssid'] ?? ''), isset($n['channel']) ? (int) $n['channel'] : null)
-                        : null;
-                    $cirrusUtilRaw = $cirrusRadio['channel_utilization'] ?? '';
-                    $ssidClean = scan_ssid($n['ssid'] ?? null);
-                    $ssidVal = $ssidClean !== '' ? $ssidClean : __('(verborgen)');
-                    // Stern = diese SSID wurde schon per Connection-Test getestet
-                    // (eigenes Ziel-Netz), nicht nur beim Scan gesehen.
-                    $isTargetSsid = array_key_exists($ssidVal, $testsBySsid);
-                ?>
-                    <tr data-ssid="<?= e($ssidVal) ?>" data-bssid="<?= e($n['bssid'] ?? '') ?>"
-                        data-band="<?= e($band) ?>" data-channel="<?= e($channelRaw) ?>"
-                        data-signal="<?= e($signalRaw) ?>"
-                        data-stations="<?= e($stationsRaw) ?>" data-util="<?= e($utilRaw) ?>"
-                        data-cirrus="<?= e($cirrusUtilRaw) ?>"
-                        data-gen="<?= e(scan_caps_sort_gen($n)) ?>" data-security="<?= e($n['security'] ?? '') ?>">
-                        <td>
-                            <?php if ($isTargetSsid): ?>
-                                <i class="fa-solid fa-star" style="color:var(--accent)" title="<?= te('Ziel-SSID - schon per Connection-Test verbunden') ?>"></i>
-                            <?php endif; ?>
-                            <?= e($ssidVal) ?>
-                        </td>
-                        <td>
-                            <?= e($n['bssid'] ?? '') ?>
-                            <?php $nApInfo = cirrus_lookup_ap((string) ($n['bssid'] ?? '')); ?>
-                            <?php if (!empty($nApInfo['ap_name'])): ?>
-                                <br><span class="muted"><?= e($nApInfo['ap_name']) ?></span>
-                            <?php endif; ?>
-                        </td>
-                        <td><?= $signalRaw !== '' ? e($signalRaw) . ' dBm' : '–' ?></td>
-                        <td><?= e($bandLabel) ?></td>
-                        <td><?= $channelRaw !== '' ? e($channelRaw) : '–' ?></td>
-                        <td><?= format_scan_standard($n) ?></td>
-                        <td><?= format_scan_security($n) ?></td>
-                        <td><?= format_scan_roaming($n) ?></td>
-                        <td><?= $stationsRaw !== '' ? e($stationsRaw) : '–' ?></td>
-                        <td><?= $utilRaw !== '' ? e(number_format((float) $utilRaw, 0)) . ' %' : '–' ?></td>
-                        <?php if ($cirrusEnabled): ?>
-                        <td>
-                            <?php if ($cirrusUtilRaw !== ''): ?>
-                                <span title="<?= te('Cirrus, gemessen %s', format_local($cirrusRadio['measured_at'] ?? null, 'd.m. H:i')) ?>">
-                                    <?= e(number_format((float) $cirrusUtilRaw, 0)) ?> %
-                                </span>
-                            <?php else: ?>–<?php endif; ?>
-                        </td>
-                        <?php endif; ?>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
+            <div class="scan-lazy" data-url="<?= e($deviceUrl) ?>/measurements/<?= (int) $s['id'] ?>/scan-table">
+                <p class="muted"><i class="fa-solid fa-spinner fa-spin"></i> <?= te('Lade Netze …') ?></p>
             </div>
-            <?php
-            $surveys = is_array($sd['channels'] ?? null) ? $sd['channels'] : [];
-            usort($surveys, fn(array $a, array $b) => ($a['frequency_mhz'] ?? 0) <=> ($b['frequency_mhz'] ?? 0));
-            ?>
-            <?php if (!empty($surveys)): ?>
-            <p class="muted chart-label">
-                <?= te('Kanalbelegung aus Sicht der Probe (iw survey dump): Anteil der Messzeit, in der das eigene Radio den Kanal belegt gesehen hat. Beim Scan nur eine kurze Momentaufnahme je Kanal (siehe Messdauer).') ?>
-            </p>
-            <div class="table-scroll">
-            <table class="survey-table">
-                <thead>
-                    <tr>
-                        <th><?= te('Kanal') ?></th>
-                        <th>Band</th>
-                        <th><?= te('Belegt') ?></th>
-                        <th><?= te('Messdauer') ?></th>
-                        <th><?= te('Rauschen') ?></th>
-                    </tr>
-                </thead>
-                <tbody>
-                <?php foreach ($surveys as $cs): [, $csBandLabel] = $bandFromFrequency($cs['frequency_mhz'] ?? null); ?>
-                    <tr>
-                        <td>
-                            <?= isset($cs['channel']) ? e($cs['channel']) : e($cs['frequency_mhz'] ?? '–') . ' MHz' ?>
-                            <?php if (!empty($cs['in_use'])): ?><span class="pill pill-muted"><?= te('aktiv') ?></span><?php endif; ?>
-                        </td>
-                        <td><?= e($csBandLabel) ?></td>
-                        <td><?= isset($cs['busy_pct']) ? e(number_format((float) $cs['busy_pct'], 0)) . ' %' : '–' ?></td>
-                        <td><?= isset($cs['active_ms']) ? e($cs['active_ms']) . ' ms' : '–' ?></td>
-                        <td><?= isset($cs['noise_dbm']) ? e($cs['noise_dbm']) . ' dBm' : '–' ?></td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-            </div>
-            <?php endif; ?>
         </details>
         </div>
     <?php endforeach; ?>
@@ -1524,41 +1409,8 @@ tabInit['verlauf'] = function () { window.wlanmonTimeline.init(<?= json_encode($
         var bandSelect = document.getElementById('scanFilterBand');
         var channelInput = document.getElementById('scanFilterChannel');
 
-        function applyFilter() {
-            var ssidQuery = ssidInput.value.trim().toLowerCase();
-            var bssidQuery = bssidInput.value.trim().toLowerCase();
-            var band = bandSelect.value;
-            var channelQuery = channelInput.value.trim();
-            var active = ssidQuery !== '' || bssidQuery !== '' || band !== '' || channelQuery !== '';
-
-            document.querySelectorAll('.scan-block').forEach(function (block) {
-                var visibleCount = 0;
-                block.querySelectorAll('table.scan-table tbody tr').forEach(function (row) {
-                    var rowSsid = (row.dataset.ssid || '').toLowerCase();
-                    var rowBssid = (row.dataset.bssid || '').toLowerCase();
-                    var rowBand = row.dataset.band || '';
-                    var rowChannel = row.dataset.channel || '';
-                    var matches =
-                        (ssidQuery === '' || rowSsid.indexOf(ssidQuery) !== -1) &&
-                        (bssidQuery === '' || rowBssid.indexOf(bssidQuery) !== -1) &&
-                        (band === '' || rowBand === band) &&
-                        (channelQuery === '' || rowChannel === channelQuery);
-                    row.style.display = matches ? '' : 'none';
-                    if (matches) { visibleCount++; }
-                });
-                block.style.display = (active && visibleCount === 0) ? 'none' : '';
-                if (active && visibleCount > 0) {
-                    block.querySelector('details').open = true;
-                }
-            });
-        }
-
-        [ssidInput, bssidInput, bandSelect, channelInput].forEach(function (el) {
-            el.addEventListener('input', applyFilter);
-            el.addEventListener('change', applyFilter);
-        });
-
-        document.querySelectorAll('table.scan-table').forEach(function (table) {
+        // Spaltenköpfe einer (nachgeladenen) Scan-Tabelle sortierbar machen.
+        function bindSort(table) {
             var headers = table.querySelectorAll('th[data-sort]');
             headers.forEach(function (th) {
                 th.addEventListener('click', function () {
@@ -1583,6 +1435,70 @@ tabInit['verlauf'] = function () { window.wlanmonTimeline.init(<?= json_encode($
                     rows.forEach(function (r) { tbody.appendChild(r); });
                 });
             });
+        }
+
+        // Tabelle eines Scans einmal nachladen (beim Aufklappen oder vor dem Filtern).
+        function loadBlock(block) {
+            var slot = block.querySelector('.scan-lazy');
+            if (!slot) { return Promise.resolve(); }
+            if (slot._loading) { return slot._loading; }
+            slot._loading = fetch(slot.dataset.url, {credentials: 'same-origin'})
+                .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.text(); })
+                .then(function (html) {
+                    var wrap = document.createElement('div');
+                    wrap.innerHTML = html;
+                    slot.replaceWith.apply(slot, Array.prototype.slice.call(wrap.childNodes));
+                    block.querySelectorAll('table.scan-table').forEach(bindSort);
+                })
+                .catch(function () {
+                    slot._loading = null;
+                    slot.innerHTML = '<p class="fail">' + <?= tjson('Netze konnten nicht geladen werden.') ?> + '</p>';
+                });
+            return slot._loading;
+        }
+
+        document.querySelectorAll('.scan-block details').forEach(function (details) {
+            details.addEventListener('toggle', function () {
+                if (details.open) { loadBlock(details.closest('.scan-block')); }
+            });
+        });
+
+        function applyFilter() {
+            var ssidQuery = ssidInput.value.trim().toLowerCase();
+            var bssidQuery = bssidInput.value.trim().toLowerCase();
+            var band = bandSelect.value;
+            var channelQuery = channelInput.value.trim();
+            var active = ssidQuery !== '' || bssidQuery !== '' || band !== '' || channelQuery !== '';
+            var blocks = Array.prototype.slice.call(document.querySelectorAll('.scan-block'));
+
+            // Zum Filtern müssen die Netze aller Scans da sein.
+            Promise.all(active ? blocks.map(loadBlock) : []).then(function () {
+                blocks.forEach(function (block) {
+                    var visibleCount = 0;
+                    block.querySelectorAll('table.scan-table tbody tr').forEach(function (row) {
+                        var rowSsid = (row.dataset.ssid || '').toLowerCase();
+                        var rowBssid = (row.dataset.bssid || '').toLowerCase();
+                        var rowBand = row.dataset.band || '';
+                        var rowChannel = row.dataset.channel || '';
+                        var matches =
+                            (ssidQuery === '' || rowSsid.indexOf(ssidQuery) !== -1) &&
+                            (bssidQuery === '' || rowBssid.indexOf(bssidQuery) !== -1) &&
+                            (band === '' || rowBand === band) &&
+                            (channelQuery === '' || rowChannel === channelQuery);
+                        row.style.display = matches ? '' : 'none';
+                        if (matches) { visibleCount++; }
+                    });
+                    block.style.display = (active && visibleCount === 0) ? 'none' : '';
+                    if (active && visibleCount > 0) {
+                        block.querySelector('details').open = true;
+                    }
+                });
+            });
+        }
+
+        [ssidInput, bssidInput, bandSelect, channelInput].forEach(function (el) {
+            el.addEventListener('input', applyFilter);
+            el.addEventListener('change', applyFilter);
         });
     });
     </script>

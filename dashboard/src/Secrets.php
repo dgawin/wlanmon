@@ -197,6 +197,16 @@ function secret_from_form($posted, bool $clear, ?string $stored): string
  *
  * @return array{encrypted: int, plain: int, broken: int}
  */
+/** Zeilen der SSID-Liste (src/Profile.php); leer, solange es die Tabelle noch nicht gibt. */
+function secrets_ssid_rows(): array
+{
+    try {
+        return db()->query('SELECT id, target FROM ssids')->fetchAll();
+    } catch (PDOException $e) {
+        return [];
+    }
+}
+
 function secrets_overview(): array
 {
     $count = ['encrypted' => 0, 'plain' => 0, 'broken' => 0];
@@ -212,6 +222,9 @@ function secrets_overview(): array
     };
     foreach (db()->query('SELECT config FROM devices WHERE config IS NOT NULL')->fetchAll() as $row) {
         device_config_map_secrets(json_decode((string) $row['config'], true) ?: [], $tally);
+    }
+    foreach (secrets_ssid_rows() as $row) {
+        secrets_map(json_decode((string) $row['target'], true) ?: [], TARGET_SECRET_PATHS, $tally);
     }
     secrets_map(setting_get('alerting') ?? [], ALERTING_SECRET_PATHS, $tally);
     return $count;
@@ -241,6 +254,14 @@ function secrets_encrypt_all(): int
         if ($done > $before) {
             db()->prepare('UPDATE devices SET config = ? WHERE id = ?')
                 ->execute([json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $row['id']]);
+        }
+    }
+    foreach (secrets_ssid_rows() as $row) {
+        $before = $done;
+        $target = secrets_map(json_decode((string) $row['target'], true) ?: [], TARGET_SECRET_PATHS, $encrypt);
+        if ($done > $before) {
+            db()->prepare('UPDATE ssids SET target = ? WHERE id = ?')
+                ->execute([json_encode($target, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $row['id']]);
         }
     }
     $alerting = setting_get('alerting');

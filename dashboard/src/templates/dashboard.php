@@ -179,7 +179,7 @@
                 </td>
                 <td>
                     <?php if (!empty($d['last_seen_at'])): ?>
-                        <span class="nowrap"><?= e(format_local($d['last_seen_at'], 'd.m.Y H:i')) ?></span>
+                        <span class="nowrap" title="<?= e(format_local($d['last_seen_at'], 'd.m.Y H:i:s')) ?>"><?= e(format_local_compact($d['last_seen_at'])) ?></span>
                     <?php else: ?>
                         <span class="muted"><?= te('noch nie') ?></span>
                     <?php endif; ?>

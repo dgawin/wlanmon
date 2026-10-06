@@ -699,6 +699,14 @@ form button {
 .config-form legend i { color: var(--accent); }
 
 /* Ziel-SSID-Karten auf der Konfigurationsseite (inkl. 802.1X-Felder) */
+/* Gerät mit Profil: eigene Einstellungen bleiben sichtbar, aber abgeblendet. */
+.dimmed-settings { opacity: 0.45; }
+.plain-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.ssid-picker { list-style: none; padding: 0; margin: 0.5rem 0; }
+.ssid-picker li { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
+.ssid-picker .check-label { margin: 0; }
+.ssid-move { white-space: nowrap; }
 .target-card {
     border: 1px solid var(--border);
     box-shadow: var(--card-shadow);

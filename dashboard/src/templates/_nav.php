@@ -65,6 +65,12 @@ $__navIsAdminOrUser = in_array($__navUser['role'] ?? null, ['admin', 'user'], tr
             <a href="/sites" class="<?= $__navIsActive('/sites') ? 'active' : '' ?>">
                 <i class="fa-solid fa-map-location-dot"></i> <?= te('Standorte') ?>
             </a>
+            <a href="/profiles" class="<?= $__navIsActive('/profiles') ? 'active' : '' ?>">
+                <i class="fa-solid fa-layer-group"></i> <?= te('Profile') ?>
+            </a>
+            <a href="/ssids" class="<?= $__navIsActive('/ssids') ? 'active' : '' ?>">
+                <i class="fa-solid fa-wifi"></i> <?= te('SSIDs') ?>
+            </a>
         <?php endif; ?>
         <?php if ($__navUser !== null && cirrus_config() !== null): ?>
             <a href="/access-points" class="<?= $__navIsActive('/access-points') ? 'active' : '' ?>">

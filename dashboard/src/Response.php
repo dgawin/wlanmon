@@ -77,6 +77,15 @@ function format_local(?string $utcDatetime, string $format): string
     }
 }
 
+/** Wie format_local(..., 'd.m.Y H:i'), aber heute nur die Uhrzeit. */
+function format_local_compact(?string $utcDatetime): string
+{
+    $today = (new DateTime('now', new DateTimeZone(DISPLAY_TIMEZONE)))->format('Y-m-d');
+    return format_local($utcDatetime, 'Y-m-d') === $today
+        ? format_local($utcDatetime, 'H:i')
+        : format_local($utcDatetime, 'd.m.Y H:i');
+}
+
 /** Aktueller Zeitpunkt als UTC-DATETIME-String, für konsistente Speicherung. */
 function utc_now(): string
 {
@@ -257,6 +266,41 @@ function format_channel_load(?array $cl): string
         return '';
     }
     return '<br><span class="muted" title="' . e(implode("\n", $tips)) . '">' . e(__('Kanal belegt:')) . ' ' . e(implode(' · ', $parts)) . '</span>';
+}
+
+/** Ab dieser Messdauer ist ein survey-Wert kein Scan-Ausschnitt mehr, sondern ein Langzeitmittel. */
+const SURVEY_LONG_MS = 60000;
+
+/** Messdauer eines survey-Eintrags lesbar, z.B. "85 ms", "4,2 s", "12 min", "9,8 h". */
+function format_survey_duration(int $ms): string
+{
+    $decimal = effective_lang() === 'en' ? '.' : ',';
+    if ($ms < 1000) {
+        return $ms . ' ms';
+    }
+    if ($ms < 60000) {
+        return number_format($ms / 1000, 1, $decimal, '') . ' s';
+    }
+    if ($ms < 3600000) {
+        return number_format($ms / 60000, 0, $decimal, '') . ' min';
+    }
+    return number_format($ms / 3600000, 1, $decimal, '') . ' h';
+}
+
+/**
+ * survey-Einträge eines Scans ohne den Leerlauf-Kanal, den mt7921u-Sticks
+ * als einzigen Wert melden (alle gescannten Kanäle 0 ms, ein Kanal zählt seit
+ * Stunden) - der gehört nicht zum Scan. Probe ab 1.0.1.66 schickt ihn nicht
+ * mehr mit; hier für ältere Scans.
+ */
+function scan_surveys(array $sd): array
+{
+    $surveys = is_array($sd['channels'] ?? null) ? $sd['channels'] : [];
+    if (count($surveys) === 1 && empty($surveys[0]['in_use']) && (int) ($surveys[0]['active_ms'] ?? 0) > SURVEY_LONG_MS) {
+        return [];
+    }
+    usort($surveys, fn(array $a, array $b) => ($a['frequency_mhz'] ?? 0) <=> ($b['frequency_mhz'] ?? 0));
+    return $surveys;
 }
 
 /** Interface-Zähler-Differenz als Text, z.B. "Rx 1.234 Pkt / 0 Err / 0 Drop · Tx ...". */

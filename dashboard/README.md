@@ -17,7 +17,8 @@ site whose probes can only reach an internal network. See [Docker](#docker).
   channel load and latency, and the probe's system values (CPU, memory,
   temperature, power supply)
 - **Central configuration:** target SSIDs, passwords, 802.1X, captive portals,
-  intervals – maintained in the browser, picked up by the probes on their own
+  intervals – maintained in the browser, picked up by the probes on their own;
+  with SSIDs and profiles, many probes share one configuration
 - **Alerts** by e-mail and Telegram, plus endpoints for Zabbix
 - **Captures** of failed tests (pcap, adapter events, wpa_supplicant log)
 - Users with roles and sites, change log, data retention and backups,
@@ -149,8 +150,9 @@ environment. What wlanmon needs:
    with the dashboard URL the probe should use.
 2. On the probe: install it and enter device ID, URL and key in the setup
    wizard – see the probe README. The wizard tests the connection right away.
-3. Back in the dashboard: open the device's **configuration** and add the
-   target SSIDs. The probe picks up the change by itself within a minute.
+3. Back in the dashboard: open the device's **configuration** and either
+   choose a [profile](#ssids-and-profiles) or add the target SSIDs directly.
+   The probe picks up the change by itself within a minute.
 
 A probe without a site is only visible to admins and is not checked by
 alerting, so assign one.
@@ -190,6 +192,32 @@ curl -u admin:<ADMIN_PASSWORD> -X POST \
 curl -u admin:<ADMIN_PASSWORD> -X DELETE \
   https://wlanmon.example.com/api/v1/admin/devices/wlanmon-probe-01
 ```
+
+## SSIDs and profiles
+
+With more than a handful of probes, maintaining every device on its own gets
+tedious – and a changed Wi-Fi password means editing all of them. Two pages
+take care of that:
+
+- **SSIDs** (`/ssids`): each network once, with everything the test needs –
+  security, password or 802.1X, captive portal, iperf3, ping target, random
+  MAC. Change a password here and every profile using it gets the new one.
+- **Profiles** (`/profiles`): a set of SSIDs in test order, plus the test
+  settings (scan and test intervals, ping, iperf3 defaults, LAN test,
+  captures, heartbeat).
+
+In a device's configuration, **"This device uses"** picks a profile or the
+device's own settings. The own settings stay saved while a profile is active,
+so switching back loses nothing. **"Turn into a profile"** creates SSIDs and a
+profile from a device's current settings and assigns it – the quickest way to
+start. The probe notices none of this: it gets the same configuration as
+before and picks up every change with its next heartbeat.
+
+Who maintains what follows the sites: SSIDs and profiles are either global
+(admins only, usable everywhere) or belong to a site (maintained by that
+site's users, usable only there). A site profile may contain global SSIDs and
+those of its site; a device may use global profiles and those of its site. A
+profile still in use cannot be deleted.
 
 ## Users & roles
 
@@ -268,14 +296,9 @@ window, changes no alert state): `php check_alerts.php --test <site-name>`.
 open `https://api.telegram.org/bot<TOKEN>/getUpdates` and read
 `"chat":{"id": ...}`.
 
-**Known limitation:** if you remove an SSID from a probe while its "SSID
-failing" alert is active, no new tests will ever clear it. Resolve it once by
-hand:
-
-```sql
-UPDATE alerts SET resolved_at = UTC_TIMESTAMP()
-WHERE device_id = '<device-id>' AND rule = 'ssid_failing:<SSID>' AND resolved_at IS NULL;
-```
+**Removed SSIDs:** once an SSID is no longer part of a device's configuration
+(own settings or profile), its old test results no longer trigger alerts, and
+an alert still open for it is closed quietly.
 
 ## Zabbix integration
 
@@ -618,7 +641,8 @@ public/               -> DocumentRoot of the vhost
 src/                  -> outside public/, not reachable from the browser
   db.php, auth.php, admin_auth.php, Response.php, Device.php, Measurement.php
   Alerting.php, Settings.php, Session.php, User.php, Site.php, Timeline.php
-  I18n.php, Retention.php, Secrets.php, Audit.php, Capture.php, Cirrus.php
+  I18n.php, Retention.php, Secrets.php, Audit.php, Capture.php, Cirrus.php, CirrusAuth.php
+  Profile.php         -> SSIDs and profiles, the configuration that applies to a device
   ProbeError.php      -> turns the probes' error codes into readable text
   templates/          -> page templates (_nav.php is shared by all pages)
 ```

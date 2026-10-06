@@ -534,26 +534,39 @@ _SURVEY_TIME_RE = re.compile(
 )
 
 
+# Ab dieser active time kann ein einzelner Kanal nicht aus dem Scan stammen.
+_SURVEY_PARKED_MS = 60_000
+
+
 def channel_survey(interface: str) -> list[ChannelSurvey]:
     """
     Kanalbelegung aus Sicht des eigenen Radios (`iw dev <if> survey dump`),
     unabhaengig davon, ob die APs ein BSS-Load-Element senden. Direkt nach
     einem Scan aufrufen: dann liegen Werte fuer alle gescannten Kanaele vor.
 
-    Was die Zeiten umfassen, haengt vom Treiber ab - mt76 (z.B. mt7921u)
-    setzt die Zaehler bei jedem Kanalwechsel zurueck, dann beschreibt
-    busy/active nur die kurze Verweildauer des letzten Scans auf diesem
-    Kanal (eine Momentaufnahme von typischerweise 30-150 ms). Andere
-    Treiber summieren seit dem Hochfahren des Interfaces (Langzeitmittel).
-    active_ms wird deshalb mitgeschickt, damit die Aussagekraft erkennbar
-    bleibt. Kanaele ohne active time (vom Treiber nicht gemessen) fallen
-    weg. Fehler fuehren zu einer leeren Liste, nie zum Abbruch des Scans.
+    Was die Zeiten umfassen, haengt vom Treiber ab - manche setzen die
+    Zaehler bei jedem Kanalwechsel zurueck, dann beschreibt busy/active nur
+    die kurze Verweildauer des letzten Scans auf diesem Kanal (eine
+    Momentaufnahme von typischerweise 30-150 ms). Andere summieren seit dem
+    Hochfahren des Interfaces (Langzeitmittel). active_ms wird deshalb
+    mitgeschickt, damit die Aussagekraft erkennbar bleibt. Kanaele ohne
+    active time (vom Treiber nicht gemessen) fallen weg. Fehler fuehren zu
+    einer leeren Liste, nie zum Abbruch des Scans.
+
+    Sonderfall mt7921u (Scan in der Firmware): alle gescannten Kanaele
+    bleiben bei 0 ms, nur der Kanal, auf dem das Radio im Leerlauf parkt,
+    zaehlt seit Stunden weiter (beobachtet 2026-10-06 am NanoPi NEO3: 6 GHz
+    Kanal 1, ~10 h). Dieser einzelne Wert gehoert nicht zum Scan und wird
+    verworfen - dann gibt es fuer diese Probe eben keine Kanalbelegung.
     """
+    entries = [e for e in _survey_entries(interface) if e.get("active")]
+    if len(entries) == 1 and not entries[0]["in_use"] and entries[0]["active"] > _SURVEY_PARKED_MS:
+        log.debug("survey dump: nur Leerlauf-Kanal %d MHz (%d ms) gezaehlt, verworfen",
+                  entries[0]["freq"], entries[0]["active"])
+        return []
     surveys: list[ChannelSurvey] = []
-    for entry in _survey_entries(interface):
-        active, busy = entry.get("active"), entry.get("busy")
-        if not active:
-            continue
+    for entry in entries:
+        active, busy = entry["active"], entry.get("busy")
         freq = entry["freq"]
         surveys.append(ChannelSurvey(
             frequency_mhz=freq,
@@ -1091,6 +1104,9 @@ def _wpa_error_summary(log_path: str, waited: float | None = None) -> tuple[str,
     except OSError:
         return "", []
     log.debug("wpa_supplicant-Log:\n%s", text)
+    silent = _auth_no_response(text)
+    if silent:
+        return silent
     for pattern, message, code, names in _WPA_ERROR_PATTERNS:
         m = re.search(pattern, text)
         if m:
@@ -1110,6 +1126,32 @@ def _wpa_error_summary(log_path: str, waited: float | None = None) -> tuple[str,
     tail = _tail(log_path)
     # Unbekanntes Fehlerbild: rohe Log-Zeilen, die das Dashboard unuebersetzt zeigt.
     return tail, ([_err("wpa_log", text=tail[len("wpa_supplicant-Log: "):])] if tail else [])
+
+
+_AUTH_TRY_RE = re.compile(r"SME: Trying to authenticate with (\S+) \(SSID='.*?' freq=(\d+) MHz\)")
+# Alles, was zeigt, dass der AP geantwortet hat (oder die Anmeldung weiter kam).
+_AUTH_ANSWER_RE = re.compile(
+    r"Trying to associate|Associated with|CTRL-EVENT-(?:AUTH-REJECT|ASSOC-REJECT|CONNECTED|EAP-)"
+    r"|4-Way Handshake|WRONG_KEY"
+)
+
+
+def _auth_no_response(text: str) -> tuple[str, list[dict]] | None:
+    """Der AP schweigt schon auf die 802.11-Authentifizierung: wpa_supplicant
+    versucht es nur ("SME: Trying to authenticate"), kommt nie zur Assoziation,
+    und es gibt weder Ablehnung noch EAP/Handshake - am Ende sperrt er das Netz
+    mit reason=CONN_FAILED. In den Adapter-Ereignissen steht dazu "auth: timed
+    out". Beobachtet 2026-10-06 an einem NanoPi NEO3 (mt7921u) auf 2,4 GHz,
+    waehrend ein Pi 5 am selben AP mit derselben Konfiguration durchkam."""
+    tries = _AUTH_TRY_RE.findall(text)
+    if not tries or _AUTH_ANSWER_RE.search(text):
+        return None
+    bssid, freq = tries[-1]
+    return (
+        f"AP antwortet nicht auf die Anmeldung ({len(tries)} Versuche an {bssid}, {_band_label(int(freq))}) - "
+        f"z.B. MAC-Sperre, Band Steering, Client-Grenze am AP oder Funkproblem auf diesem Band",
+        [_err("auth_no_response", bssid=bssid, frequency_mhz=int(freq), attempts=len(tries))],
+    )
 
 
 def _eap_stall_summary(text: str) -> tuple[str, dict] | None:

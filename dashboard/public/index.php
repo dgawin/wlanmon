@@ -16,6 +16,7 @@ require_once __DIR__ . '/../src/User.php';
 require_once __DIR__ . '/../src/Site.php';
 require_once __DIR__ . '/../src/Cirrus.php';
 require_once __DIR__ . '/../src/CirrusAuth.php';
+require_once __DIR__ . '/../src/Profile.php';
 require_once __DIR__ . '/../src/Timeline.php';
 require_once __DIR__ . '/../src/Retention.php';
 require_once __DIR__ . '/../src/Audit.php';
@@ -167,6 +168,12 @@ try {
         handle_download_capture($device['id'], $m[2], $m[3]);
         exit;
     }
+    if ($method === 'GET' && preg_match('#^/devices/([^/]+)/measurements/(\d+)/scan-table$#', $path, $m)) {
+        $device = device_find_or_404($m[1]);
+        require_device_access($device);
+        handle_scan_table_fragment($device['id'], (int) $m[2]);
+        exit;
+    }
     if ($method === 'GET' && preg_match('#^/devices/([^/]+)/measurements/(\d+)/cirrus-auth$#', $path, $m)) {
         $device = device_find_or_404($m[1]);
         // Enthaelt Benutzernamen - wie die Mitschnitte nicht fuer Viewer.
@@ -236,7 +243,14 @@ try {
             json_error(400, $rangeError);
             exit;
         }
-        json_response(timeline_build($device, $from, $to, $hours));
+        $timeline = timeline_build($device, $from, $to, $hours);
+        // Laufzeiten je Abschnitt, sichtbar in den Browser-Entwicklertools (Netzwerk -> Timing).
+        $timing = [];
+        foreach (timeline_timing() as $section => $ms) {
+            $timing[] = $section . ';dur=' . $ms;
+        }
+        header('Server-Timing: ' . implode(', ', $timing));
+        json_response($timeline);
     }
     if ($method === 'GET' && preg_match('#^/devices/([^/]+)/measurements/(\d+)/raw$#', $path, $m)) {
         $device = device_find_or_404($m[1]);
@@ -250,6 +264,53 @@ try {
     if ($method === 'GET' && $path === '/access-points') {
         require_login();
         render_access_points();
+        exit;
+    }
+    // ---- SSIDs und Profile (siehe src/Profile.php) ----
+    if (preg_match('#^/(ssids|profiles)(?:/(new|\d+))?(/delete)?$#', $path, $m)) {
+        $user = require_role('admin', 'user');
+        $isSsid = $m[1] === 'ssids';
+        $sub = $m[2] ?? '';
+        if ($sub === '' && $method === 'GET' && empty($m[3])) {
+            $isSsid ? render_ssids() : render_profiles();
+            exit;
+        }
+        if ($sub === 'new' && empty($m[3])) {
+            if ($user['role'] !== 'admin' && scope_site_choices($user) === []) {
+                http_response_code(403);
+                header('Content-Type: text/plain; charset=utf-8');
+                echo '403 Forbidden - ' . __('fehlende Berechtigung') . "\n";
+                exit;
+            }
+            if ($method === 'GET') {
+                $isSsid ? render_ssid_edit(null) : render_profile_edit(null);
+            } else {
+                $isSsid ? handle_save_ssid(null) : handle_save_profile(null);
+            }
+            exit;
+        }
+        if ($sub !== '' && $sub !== 'new') {
+            $row = $isSsid ? ssid_find((int) $sub) : profile_find((int) $sub);
+            if ($method === 'GET' && empty($m[3])) {
+                require_scope_row($row, $user, false);
+                $isSsid ? render_ssid_edit($row) : render_profile_edit($row);
+                exit;
+            }
+            if ($method === 'POST') {
+                $row = require_scope_row($row, $user, true);
+                if (!empty($m[3])) {
+                    $isSsid ? handle_delete_ssid($row) : handle_delete_profile($row);
+                } else {
+                    $isSsid ? handle_save_ssid($row) : handle_save_profile($row);
+                }
+                exit;
+            }
+        }
+    }
+    if ($method === 'POST' && preg_match('#^/devices/([^/]+)/config/to-profile$#', $path, $m)) {
+        $device = device_find_or_404($m[1]);
+        require_write_access(require_device_access($device));
+        handle_device_config_to_profile($device);
         exit;
     }
     if ($method === 'GET' && $path === '/sites') {
@@ -427,6 +488,32 @@ function handle_upload_capture(string $deviceId, string $captureId): void
     json_response(['ok' => true], 201);
 }
 
+/** Netztabelle eines Scans, nachgeladen beim Aufklappen im Tab "Scans" (siehe _scan_table.php). */
+function handle_scan_table_fragment(string $deviceId, int $measurementId): void
+{
+    $measurement = measurement_find($measurementId, $deviceId);
+    if ($measurement === null || $measurement['kind'] !== 'scan') {
+        http_response_code(404);
+        echo e(__('Messung nicht gefunden.'));
+        return;
+    }
+    $sd = json_decode((string) $measurement['data'], true) ?: [];
+    $networks = is_array($sd['networks'] ?? null) ? $sd['networks'] : [];
+    usort($networks, fn(array $a, array $b): int => ($b['signal_dbm'] ?? -999) <=> ($a['signal_dbm'] ?? -999));
+    // Stern an SSIDs, die schon per Connection-Test getestet wurden (wie auf der Geräteseite).
+    $targetSsids = [];
+    foreach (measurement_list($deviceId, 'connection_test', 100) as $t) {
+        $ssid = (json_decode((string) $t['data'], true) ?: [])['ssid'] ?? null;
+        if (is_string($ssid)) {
+            $targetSsids[$ssid] = true;
+        }
+    }
+    $cirrusEnabled = cirrus_config() !== null;
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: private, max-age=300');
+    require __DIR__ . '/../src/templates/_scan_table.php';
+}
+
 /**
  * HTML-Ausschnitt mit den Cirrus-Anmeldeversuchen zu einem Test - wird per
  * Klick auf "Cirrus" in der Fehlerspalte nachgeladen (device_detail.php).
@@ -578,7 +665,8 @@ function handle_heartbeat(string $deviceId): void
     }
     json_response([
         'ok' => true,
-        'config_version' => !empty($device['config']) ? substr(sha1((string) $device['config']), 0, 16) : 'none',
+        // Aus der wirksamen Konfiguration (Profil oder eigene), siehe src/Profile.php.
+        'config_version' => device_config_version($device),
     ]);
 }
 
@@ -594,14 +682,16 @@ function handle_get_device_config(string $deviceId): void
         json_error(401, 'Unbekanntes Gerät oder ungültiger API-Key');
     }
 
-    if (empty($device['config'])) {
+    // Profil oder eigene Konfiguration des Geräts (src/Profile.php).
+    $effective = device_effective_config($device);
+    if ($effective === null) {
         // Der Client behandelt 404 als "keine zentrale Config vorhanden"
         // und bleibt bei seinen lokalen/gecachten Werten.
         json_error(404, 'Keine zentrale Konfiguration für dieses Gerät hinterlegt');
     }
 
     $failed = 0;
-    $config = device_config_decrypt(json_decode((string) $device['config'], true) ?: [], $failed);
+    $config = device_config_decrypt($effective, $failed);
     if ($failed > 0) {
         // Lieber gar keine Config als leere PSKs: die Probe behält bei einem
         // Fehler ihren zuletzt gecachten Stand (config_manager.py).
@@ -675,28 +765,13 @@ function handle_set_device_config(string $deviceId): void
  * Baut dieselbe Config-Struktur aus $_POST statt aus JSON und leitet
  * danach zurück auf die Geräteseite (statt JSON-Antwort wie bei der API).
  */
-function handle_set_device_config_via_form(string $deviceId): void
+/**
+ * Testeinstellungen aus dem Formular (_test_settings.php): Scan, Heartbeat,
+ * Connection-Tests ohne Ziel-SSIDs. Gemeinsam für Gerätekonfiguration und Profile.
+ */
+function test_settings_from_post(): array
 {
-    // Lokal statt als Datei-Konstante: eine top-level const wird erst
-    // ausgeführt, wenn der sequentielle Kontrollfluss an ihr vorbeikommt -
-    // der Router oben in der Datei ruft diese Funktion aber auf, bevor er
-    // dort ankommt, was zu "Undefined constant" führt.
-    $allowedSecurity = ['open', 'wpa2-psk', 'wpa3-psk', 'wpa2-wpa3-psk', 'wpa2-eap'];
-
-    $device = device_find($deviceId);
-    if ($device === null) {
-        http_response_code(404);
-        header('Content-Type: text/plain; charset=utf-8');
-        echo '404 - ' . __('Gerät nicht gefunden') . "\n";
-        exit;
-    }
-    // Bisher gespeicherter Stand (Geheimnisse so wie gespeichert, ggf.
-    // verschlüsselt): Quelle für leer gelassene Passwortfelder und fürs
-    // Änderungsprotokoll.
-    $oldConfig = json_decode((string) ($device['config'] ?? ''), true) ?: [];
-    $oldTargets = array_values((array) ($oldConfig['connection_tests']['targets'] ?? []));
-
-    $config = [
+    return [
         'scan' => [
             'interval_seconds' => max(1, (int) ($_POST['scan_interval_seconds'] ?? 60)),
             // Scans je Durchlauf, nach BSSID zusammengefuehrt (Probe ab 1.0.1.61).
@@ -737,87 +812,129 @@ function handle_set_device_config_via_form(string $deviceId): void
                     ? null
                     : min(10080, max(0, (int) $_POST['lan_min_interval_minutes'])),
             ],
-            'targets' => [],
         ],
     ];
+}
 
-    foreach ((array) ($_POST['targets'] ?? []) as $t) {
+/**
+ * Eine Ziel-SSID aus dem Formular (_target_fields.php). $oldTarget ist der
+ * bisher gespeicherte Stand derselben SSID: Quelle für leer gelassene
+ * Passwortfelder. null, wenn keine SSID eingetragen ist.
+ */
+function target_from_post(array $t, array $oldTarget): ?array
+{
+    $allowedSecurity = ['open', 'wpa2-psk', 'wpa3-psk', 'wpa2-wpa3-psk', 'wpa2-eap'];
+    $ssid = trim((string) ($t['ssid'] ?? ''));
+    if ($ssid === '') {
+        return null;
+    }
+    $security = (string) ($t['security'] ?? 'wpa2-psk');
+    if (!in_array($security, $allowedSecurity, true)) {
+        $security = 'wpa2-psk';
+    }
+    $pl = is_array($t['portal_login'] ?? null) ? $t['portal_login'] : [];
+    $target = [
+        'ssid' => $ssid,
+        'security' => $security,
+        'psk' => '',
+        'captive_portal_check' => !empty($t['captive_portal_check']),
+        // Leer = Default-Gateway des Netzes dieser SSID (siehe main.py/
+        // wifi_ops.py); connection_tests.ping_target ist nur der
+        // letzte Fallback, falls kein Gateway ermittelbar ist.
+        'ping_target' => clean_line($t['ping_target'] ?? ''),
+        'iperf3_enabled' => !empty($t['iperf3_enabled']),
+        // Leer = Standardwert aus connection_tests.iperf3_server/-duration
+        // verwenden (siehe main.py); nur bei abweichendem VLAN/Server
+        // fuer diese SSID eintragen.
+        'iperf3_server' => trim((string) ($t['iperf3_server'] ?? '')),
+        'iperf3_duration_seconds' => (int) ($t['iperf3_duration_seconds'] ?? 0),
+        'iperf3_port' => min(65535, max(0, (int) ($t['iperf3_port'] ?? 0))),
+        'iperf3_download' => !empty($t['iperf3_download']),
+        // Ratenbegrenzung in Mbit/s (iperf3 -b), 0 = ohne Begrenzung.
+        'iperf3_bitrate_mbps' => min(10000.0, max(0.0, round((float) str_replace(',', '.', (string) ($t['iperf3_bitrate_mbps'] ?? 0)), 1))),
+        'random_mac' => !empty($t['random_mac']),
+        'captive_portal_login' => [
+            'enabled' => !empty($pl['enabled']),
+            'type' => in_array((string) ($pl['type'] ?? ''), ['auto', 'cirrus', 'form'], true) ? (string) $pl['type'] : 'auto',
+            'logoff' => !empty($pl['logoff']),
+            'username' => clean_line($pl['username'] ?? ''),
+            'password' => (string) ($pl['password'] ?? ''),
+        ],
+    ];
+    if ($security === 'wpa2-eap') {
+        $target['eap'] = build_eap_config(is_array($t['eap'] ?? null) ? $t['eap'] : []);
+    } elseif ($security !== 'open') {
+        $target['psk'] = (string) ($t['psk'] ?? '');
+    }
+    // Passwortfelder zeigen gespeicherte Werte nie an: leer gelassen = bisheriger Wert.
+    foreach (TARGET_SECRET_FORM_FIELDS as [$storedPath, $formPath]) {
+        if (array_path_get($target, $storedPath) === null
+            || ($storedPath === ['psk'] && in_array($security, ['open', 'wpa2-eap'], true))) {
+            continue;  // Feld gehört nicht zur gewählten Sicherheit/EAP-Methode
+        }
+        $clearPath = $formPath;
+        $clearPath[count($clearPath) - 1] .= '_clear';
+        $stored = array_path_get($oldTarget, $storedPath);
+        $target = array_path_set($target, $storedPath, secret_from_form(
+            array_path_get($t, $formPath),
+            !empty(array_path_get($t, $clearPath)),
+            is_string($stored) ? $stored : null
+        ));
+    }
+    return $target;
+}
+
+/**
+ * Ziel-SSIDs der Gerätekonfiguration (Liste von Karten). Passwortfelder
+ * zeigen gespeicherte Werte nie an; die Zuordnung zum gespeicherten Ziel
+ * läuft über die ursprüngliche Position UND SSID der Karte (_orig/_orig_ssid),
+ * damit nach Löschen/Umbenennen einer anderen SSID kein Passwort beim falschen
+ * Ziel landet.
+ */
+function targets_from_post(array $posted, array $oldTargets): array
+{
+    $targets = [];
+    foreach ($posted as $t) {
         if (!is_array($t)) {
             continue;
         }
-        $ssid = trim((string) ($t['ssid'] ?? ''));
-        if ($ssid === '') {
-            continue;
-        }
-        $security = (string) ($t['security'] ?? 'wpa2-psk');
-        if (!in_array($security, $allowedSecurity, true)) {
-            $security = 'wpa2-psk';
-        }
-        $target = [
-            'ssid' => $ssid,
-            'security' => $security,
-            'psk' => '',
-            'captive_portal_check' => !empty($t['captive_portal_check']),
-            // Leer = Default-Gateway des Netzes dieser SSID (siehe main.py/
-            // wifi_ops.py); connection_tests.ping_target ist nur der
-            // letzte Fallback, falls kein Gateway ermittelbar ist.
-            'ping_target' => clean_line($t['ping_target'] ?? ''),
-            'iperf3_enabled' => !empty($t['iperf3_enabled']),
-            // Leer = Standardwert aus connection_tests.iperf3_server/-duration
-            // verwenden (siehe main.py); nur bei abweichendem VLAN/Server
-            // fuer diese SSID eintragen.
-            'iperf3_server' => trim((string) ($t['iperf3_server'] ?? '')),
-            'iperf3_duration_seconds' => (int) ($t['iperf3_duration_seconds'] ?? 0),
-            'iperf3_port' => min(65535, max(0, (int) ($t['iperf3_port'] ?? 0))),
-            'iperf3_download' => !empty($t['iperf3_download']),
-            // Ratenbegrenzung in Mbit/s (iperf3 -b), 0 = ohne Begrenzung.
-            'iperf3_bitrate_mbps' => min(10000.0, max(0.0, round((float) str_replace(',', '.', (string) ($t['iperf3_bitrate_mbps'] ?? 0)), 1))),
-            'random_mac' => !empty($t['random_mac']),
-            'captive_portal_login' => [
-                'enabled' => !empty($t['portal_login']['enabled']),
-                'type' => in_array((string) ($t['portal_login']['type'] ?? 'auto'), ['auto', 'cirrus', 'form'], true)
-                    ? (string) $t['portal_login']['type']
-                    : 'auto',
-                'logoff' => !empty($t['portal_login']['logoff']),
-                'username' => clean_line($t['portal_login']['username'] ?? ''),
-                'password' => (string) ($t['portal_login']['password'] ?? ''),
-            ],
-        ];
-        if ($security === 'wpa2-eap') {
-            $target['eap'] = build_eap_config(is_array($t['eap'] ?? null) ? $t['eap'] : []);
-        } elseif ($security !== 'open') {
-            $target['psk'] = (string) ($t['psk'] ?? '');
-        }
-        // Passwortfelder zeigen gespeicherte Werte nie an: leer gelassen =
-        // bisheriger Wert. Zuordnung über die ursprüngliche Position UND SSID
-        // der Karte (_orig/_orig_ssid), damit nach Löschen/Umbenennen einer
-        // anderen SSID kein Passwort beim falschen Ziel landet.
         $orig = isset($t['_orig']) && ctype_digit((string) $t['_orig']) ? (int) $t['_orig'] : null;
         $oldTarget = $orig !== null && isset($oldTargets[$orig])
             && is_array($oldTargets[$orig])
             && (string) ($oldTargets[$orig]['ssid'] ?? '') === (string) ($t['_orig_ssid'] ?? "\0")
             ? $oldTargets[$orig] : [];
-        foreach (TARGET_SECRET_FORM_FIELDS as [$storedPath, $formPath]) {
-            if (array_path_get($target, $storedPath) === null
-                || ($storedPath === ['psk'] && in_array($security, ['open', 'wpa2-eap'], true))) {
-                continue;  // Feld gehört nicht zur gewählten Sicherheit/EAP-Methode
-            }
-            $clearPath = $formPath;
-            $clearPath[count($clearPath) - 1] .= '_clear';
-            $stored = array_path_get($oldTarget, $storedPath);
-            $target = array_path_set($target, $storedPath, secret_from_form(
-                array_path_get($t, $formPath),
-                !empty(array_path_get($t, $clearPath)),
-                is_string($stored) ? $stored : null
-            ));
+        $target = target_from_post($t, $oldTarget);
+        if ($target !== null) {
+            $targets[] = $target;
         }
-        $config['connection_tests']['targets'][] = $target;
     }
+    return $targets;
+}
+
+function handle_set_device_config_via_form(string $deviceId): void
+{
+    $device = device_find($deviceId);
+    if ($device === null) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '404 - ' . __('Gerät nicht gefunden') . "\n";
+        exit;
+    }
+    // Bisher gespeicherter Stand (Geheimnisse so wie gespeichert, ggf.
+    // verschlüsselt): Quelle für leer gelassene Passwortfelder und fürs
+    // Änderungsprotokoll.
+    $oldConfig = json_decode((string) ($device['config'] ?? ''), true) ?: [];
+    $oldTargets = array_values((array) ($oldConfig['connection_tests']['targets'] ?? []));
+
+    $config = test_settings_from_post();
+    $config['connection_tests']['targets'] = targets_from_post((array) ($_POST['targets'] ?? []), $oldTargets);
 
     // trim() statt clean_line(): die Bemerkung darf mehrzeilig sein.
     $notes = trim((string) ($_POST['notes'] ?? ''));
-    $old = audit_device_view($oldConfig) + ['notes' => (string) ($device['notes'] ?? ''), 'site' => (string) ($device['site_name'] ?? '')];
-    $new = audit_device_view($config) + ['notes' => $notes, 'site' => $old['site']];
+    $oldProfile = isset($device['profile_id']) ? profile_find((int) $device['profile_id']) : null;
+    $old = audit_device_view($oldConfig) + ['notes' => (string) ($device['notes'] ?? ''), 'site' => (string) ($device['site_name'] ?? ''),
+        'profile' => (string) ($oldProfile['name'] ?? '')];
+    $new = audit_device_view($config) + ['notes' => $notes, 'site' => $old['site'], 'profile' => $old['profile']];
 
     device_set_config($deviceId, $config);
     device_set_notes($deviceId, $notes);
@@ -830,13 +947,261 @@ function handle_set_device_config_via_form(string $deviceId): void
         device_set_site($deviceId, $siteId);
         $site = $siteId !== null ? site_find($siteId) : null;
         $new['site'] = (string) ($site['name'] ?? '');
+    } else {
+        $siteId = isset($device['site_id']) ? (int) $device['site_id'] : null;
     }
+    // Profil oder eigene Konfiguration. Die eigene wird oben trotzdem gespeichert
+    // (die Felder sind nur ausgeblendet) - ein Zurückschalten verliert nichts.
+    $profileId = ($_POST['profile_id'] ?? '') !== '' ? (int) $_POST['profile_id'] : null;
+    $profile = $profileId !== null ? profile_find($profileId) : null;
+    if ($profile === null || !scope_visible(current_user(), scope_site_id($profile['site_id']))
+        || !device_may_use_profile($siteId, $profile)) {
+        $profile = null;
+    }
+    device_set_profile($deviceId, $profile !== null ? (int) $profile['id'] : null);
+    $new['profile'] = (string) ($profile['name'] ?? '');
     $changes = audit_diff($old, $new);
     if ($changes !== []) {
         audit_log('device', $deviceId, 'config', $changes);
     }
     header('Location: /devices/' . rawurlencode($deviceId) . '/config?saved=1');
     exit;
+}
+
+// ============================================================
+// SSIDs und Profile (siehe src/Profile.php)
+// ============================================================
+
+/** 404 + Ende, wenn $row null ist oder $user ihn nicht sehen darf. */
+function require_scope_row(?array $row, array $user, bool $edit): array
+{
+    if ($row === null || !scope_visible($user, scope_site_id($row['site_id']))) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '404 - ' . __('Nicht gefunden') . "\n";
+        exit;
+    }
+    if ($edit && !scope_editable($user, scope_site_id($row['site_id']))) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '403 Forbidden - ' . __('fehlende Berechtigung') . "\n";
+        exit;
+    }
+    return $row;
+}
+
+/** Standort aus dem Formular - nur einer, dem $user zuordnen darf; '' = global (nur Admin). */
+function scope_site_from_post(array $user): ?int
+{
+    $siteId = scope_site_id($_POST['site_id'] ?? '');
+    if ($siteId === null && $user['role'] !== 'admin') {
+        $choices = scope_site_choices($user);
+        return $choices !== [] ? (int) $choices[0]['id'] : -1;
+    }
+    if ($siteId !== null && !in_array($siteId, array_map('intval', array_column(scope_site_choices($user), 'id')), true)) {
+        return -1;
+    }
+    return $siteId;
+}
+
+function render_ssids(): void
+{
+    $user = current_user();
+    $ssids = ssid_list($user);
+    $ssidSaved = isset($_GET['saved']);
+    $ssidDeleted = isset($_GET['deleted']);
+    require __DIR__ . '/../src/templates/ssids.php';
+}
+
+function render_ssid_edit(?array $ssid, ?string $error = null): void
+{
+    $user = current_user();
+    $siteChoices = scope_site_choices($user);
+    $target = $ssid !== null ? (json_decode((string) $ssid['target'], true) ?: []) : ['security' => 'wpa2-psk'];
+    $usedIn = $ssid !== null ? ssid_profiles((int) $ssid['id']) : [];
+    $auditEntries = $ssid !== null ? audit_list('ssid', (string) $ssid['id'], 20) : [];
+    $ssidSaved = isset($_GET['saved']);
+    require __DIR__ . '/../src/templates/ssid_edit.php';
+}
+
+function handle_save_ssid(?array $ssid): void
+{
+    $user = current_user();
+    $siteId = scope_site_from_post($user);
+    $oldTarget = $ssid !== null ? (json_decode((string) $ssid['target'], true) ?: []) : [];
+    $target = target_from_post(is_array($_POST['target'] ?? null) ? $_POST['target'] : [], $oldTarget);
+    if ($siteId === -1 || $target === null) {
+        render_ssid_edit($ssid, $siteId === -1 ? __('Diesen Standort darfst du nicht wählen.') : __('Bitte eine SSID eintragen.'));
+        exit;
+    }
+    // Eine SSID, die schon in Profilen steckt, darf nur in einen Standort
+    // wandern, zu dem alle diese Profile passen.
+    if ($ssid !== null && $siteId !== null) {
+        foreach (ssid_profiles((int) $ssid['id']) as $p) {
+            if (!profile_may_use_ssid(scope_site_id(profile_find((int) $p['id'])['site_id'] ?? null), ['site_id' => $siteId])) {
+                render_ssid_edit($ssid, __('Die SSID steckt im Profil „%s“ eines anderen Standorts bzw. einem globalen Profil und muss deshalb global bleiben.', (string) $p['name']));
+                exit;
+            }
+        }
+    }
+    $label = clean_line($_POST['label'] ?? '');
+    $id = ssid_save($ssid !== null ? (int) $ssid['id'] : null, $siteId, text_limit($label, 100), $target);
+    $site = $siteId !== null ? site_find($siteId) : null;
+    $changes = audit_diff(
+        $ssid !== null ? ['site' => (string) ($ssid['site_name'] ?? ''), 'label' => (string) ($ssid['label'] ?? ''), 'ssid' => $oldTarget] : [],
+        ['site' => (string) ($site['name'] ?? ''), 'label' => $label, 'ssid' => $target]
+    );
+    audit_log('ssid', (string) $id, $ssid !== null ? 'changed' : 'created', $changes);
+    header('Location: /ssids/' . $id . '?saved=1');
+    exit;
+}
+
+function handle_delete_ssid(array $ssid): void
+{
+    ssid_delete((int) $ssid['id']);
+    audit_log('ssid', (string) $ssid['id'], 'deleted', [['field' => 'ssid', 'old' => ssid_display($ssid), 'new' => '']]);
+    header('Location: /ssids?deleted=1');
+    exit;
+}
+
+function render_profiles(): void
+{
+    $user = current_user();
+    $profiles = profile_list($user);
+    $profileDeleted = isset($_GET['deleted']);
+    require __DIR__ . '/../src/templates/profiles.php';
+}
+
+function render_profile_edit(?array $profile, ?string $error = null): void
+{
+    $user = current_user();
+    $siteChoices = scope_site_choices($user);
+    $config = $profile !== null ? (json_decode((string) $profile['settings'], true) ?: []) : [];
+    $selectedIds = $profile !== null ? profile_ssid_ids((int) $profile['id']) : [];
+    $allSsids = ssid_list($user);
+    $devices = $profile !== null ? profile_devices((int) $profile['id']) : [];
+    $auditEntries = $profile !== null ? audit_list('profile', (string) $profile['id'], 20) : [];
+    $profileSaved = isset($_GET['saved']);
+    require __DIR__ . '/../src/templates/profile_edit.php';
+}
+
+function handle_save_profile(?array $profile): void
+{
+    $user = current_user();
+    $siteId = scope_site_from_post($user);
+    $name = text_limit(clean_line($_POST['name'] ?? ''), 100);
+    if ($siteId === -1 || $name === '') {
+        render_profile_edit($profile, $siteId === -1 ? __('Diesen Standort darfst du nicht wählen.') : __('Bitte einen Namen eintragen.'));
+        exit;
+    }
+    // Nur SSIDs, die der User sieht und die zum Standort des Profils passen, in der gewählten Reihenfolge.
+    $ssidIds = [];
+    $order = is_array($_POST['ssid_order'] ?? null) ? $_POST['ssid_order'] : [];
+    foreach (array_map('intval', is_array($_POST['ssids'] ?? null) ? $_POST['ssids'] : []) as $ssidId) {
+        $ssid = ssid_find($ssidId);
+        if ($ssid !== null && scope_visible($user, scope_site_id($ssid['site_id'])) && profile_may_use_ssid($siteId, $ssid)) {
+            $ssidIds[$ssidId] = (int) ($order[$ssidId] ?? 999);
+        }
+    }
+    asort($ssidIds);
+    $ssidIds = array_keys($ssidIds);
+    // Geräte, die das Profil nutzen, müssen weiter dürfen.
+    if ($profile !== null) {
+        foreach (profile_devices((int) $profile['id']) as $d) {
+            if (!device_may_use_profile(scope_site_id($d['site_id']), ['site_id' => $siteId])) {
+                render_profile_edit($profile, __('Gerät %s eines anderen Standorts nutzt dieses Profil - der Standort lässt sich so nicht ändern.', (string) $d['id']));
+                exit;
+            }
+        }
+    }
+    $settings = test_settings_from_post();
+    $oldView = $profile !== null ? profile_audit_view($profile, json_decode((string) $profile['settings'], true) ?: [], profile_ssid_ids((int) $profile['id'])) : [];
+    $id = profile_save($profile !== null ? (int) $profile['id'] : null, $siteId, $name, $settings, $ssidIds);
+    $changes = audit_diff($oldView, profile_audit_view(profile_find($id) ?? [], $settings, $ssidIds));
+    audit_log('profile', (string) $id, $profile !== null ? 'changed' : 'created', $changes);
+    header('Location: /profiles/' . $id . '?saved=1');
+    exit;
+}
+
+/** Vergleichbare Sicht auf ein Profil fürs Änderungsprotokoll (SSIDs mit Namen statt IDs). */
+function profile_audit_view(array $profile, array $settings, array $ssidIds): array
+{
+    $names = [];
+    foreach ($ssidIds as $ssidId) {
+        $ssid = ssid_find((int) $ssidId);
+        $names[] = $ssid !== null ? ssid_display($ssid) : '#' . $ssidId;
+    }
+    return ['name' => (string) ($profile['name'] ?? ''), 'site' => (string) ($profile['site_name'] ?? ''),
+        'ssids' => implode(', ', $names)] + $settings;
+}
+
+function handle_delete_profile(array $profile): void
+{
+    if (profile_devices((int) $profile['id']) !== []) {
+        render_profile_edit($profile, __('Das Profil wird noch von Geräten genutzt - erst dort umstellen.'));
+        exit;
+    }
+    profile_delete((int) $profile['id']);
+    audit_log('profile', (string) $profile['id'], 'deleted', [['field' => 'name', 'old' => (string) $profile['name'], 'new' => '']]);
+    header('Location: /profiles?deleted=1');
+    exit;
+}
+
+/**
+ * Aus der eigenen Konfiguration eines Geräts ein Profil machen: jede Ziel-SSID
+ * wird zu einer SSID (gleicher Standort wie das Gerät; eine bereits vorhandene,
+ * identische SSID wird wiederverwendet), die Testeinstellungen werden zum
+ * Profil, und das Gerät nutzt es danach.
+ */
+function handle_device_config_to_profile(array $device): void
+{
+    $user = current_user();
+    $siteId = isset($device['site_id']) ? (int) $device['site_id'] : null;
+    if (!scope_editable($user, $siteId)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '403 Forbidden - ' . __('fehlende Berechtigung') . "\n";
+        exit;
+    }
+    $config = json_decode((string) ($device['config'] ?? ''), true) ?: [];
+    $targets = (array) ($config['connection_tests']['targets'] ?? []);
+    unset($config['connection_tests']['targets']);
+
+    // Vorhandene SSIDs, die das Profil nutzen darf (gleicher Standort, sonst
+    // global), nach Inhalt - entschlüsselt verglichen, denn jede Verschlüsselung
+    // ergibt einen anderen Geheimtext, auch beim gleichen Passwort.
+    $existing = [];
+    foreach (ssid_list($user) as $s) {
+        $key = ssid_content_key(json_decode((string) $s['target'], true) ?: []);
+        if (scope_site_id($s['site_id']) === $siteId || (scope_site_id($s['site_id']) === null && !isset($existing[$key]))) {
+            $existing[$key] = (int) $s['id'];
+        }
+    }
+    $ssidIds = [];
+    foreach ($targets as $t) {
+        if (!is_array($t) || ($t['ssid'] ?? '') === '') {
+            continue;
+        }
+        $key = ssid_content_key($t);
+        $ssidId = $existing[$key] ?? ssid_save(null, $siteId, '', $t);
+        if (!isset($existing[$key])) {
+            audit_log('ssid', (string) $ssidId, 'created', [['field' => 'ssid', 'old' => '', 'new' => (string) $t['ssid']]]);
+        }
+        $ssidIds[] = $ssidId;
+    }
+    $name = text_limit(__('Profil von %s', (string) $device['id']), 100);
+    $profileId = profile_save(null, $siteId, $name, $config, $ssidIds);
+    audit_log('profile', (string) $profileId, 'created', [['field' => 'name', 'old' => '', 'new' => $name]]);
+    device_set_profile((string) $device['id'], $profileId);
+    audit_log('device', (string) $device['id'], 'config', [['field' => 'profile', 'old' => '', 'new' => $name]]);
+    header('Location: /profiles/' . $profileId . '?saved=1');
+    exit;
+}
+
+/** Auf $max Zeichen kürzen (UTF-8, ohne mbstring). */
+function text_limit(string $text, int $max): string
+{
+    return preg_match('/^.{0,' . $max . '}/su', $text, $m) ? $m[0] : substr($text, 0, $max);
 }
 
 /** Einzeilige Eingabe: Zeilenumbrüche entfernen, trimmen. */
@@ -1311,6 +1676,7 @@ function handle_create_device_via_form(): void
 /** @param array<string, mixed> $device Bereits per device_find_or_404() geladen (siehe Route). */
 function render_device_detail(array $device): void
 {
+    $renderStart = microtime(true);
     $deviceId = $device['id'];
 
     // Anzahl über ?scan_limit=<n> einstellbar (Standard 20), auf eine
@@ -1406,7 +1772,15 @@ function render_device_detail(array $device): void
         $localIps = is_array($lastScanData['local_ips'] ?? null) ? $lastScanData['local_ips'] : [];
     }
 
+    // Seite puffern, damit der Server-Timing-Header (Daten laden / HTML bauen)
+    // vor der Ausgabe stehen kann - sichtbar in den Browser-Entwicklertools.
+    $dataMs = round((microtime(true) - $renderStart) * 1000, 1);
+    ob_start();
     require __DIR__ . '/../src/templates/device_detail.php';
+    $html = (string) ob_get_clean();
+    header(sprintf('Server-Timing: data;dur=%s, render;dur=%s', $dataMs,
+        round((microtime(true) - $renderStart) * 1000 - $dataMs, 1)));
+    echo $html;
 }
 
 /** @param array<string, mixed> $device Bereits per device_find_or_404() geladen (siehe Route). */
@@ -1419,6 +1793,11 @@ function render_device_config(array $device): void
     $configSaved = isset($_GET['saved']);
     $sites = site_list();
     $auditEntries = audit_list('device', (string) $device['id'], 20);
+    $deviceSiteId = isset($device['site_id']) ? (int) $device['site_id'] : null;
+    $profiles = array_values(array_filter(profile_list(current_user()),
+        fn(array $p): bool => device_may_use_profile($deviceSiteId, $p)));
+    $currentProfile = !empty($device['profile_id']) ? profile_find((int) $device['profile_id']) : null;
+    $profileCreated = isset($_GET['profile_created']);
 
     require __DIR__ . '/../src/templates/device_config.php';
 }

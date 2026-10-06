@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/Cirrus.php';
+require_once __DIR__ . '/Profile.php';
 require_once __DIR__ . '/Response.php';
 
 /*
@@ -27,8 +28,26 @@ const TIMELINE_HOURS = [1, 3, 6, 24, 72];
 /** Längster frei wählbarer Zeitraum (von/bis) in Tagen. */
 const TIMELINE_MAX_SPAN_DAYS = 31;
 
-/** Höchstens so viele Scans je Abruf auswerten - darüber jeden k-ten. */
-const TIMELINE_MAX_SCANS = 1500;
+/**
+ * Höchstens so viele Scans je Abruf auswerten - darüber jeden k-ten. Jeder
+ * Scan wird komplett entpackt (alle Netze), das kostet bei 24 h mit einem Scan
+ * pro Minute mehrere Sekunden; 300 Punkte (24 h: etwa alle 5 Minuten) reichen
+ * für die Linie im Diagramm.
+ */
+const TIMELINE_MAX_SCANS = 300;
+
+/** Laufzeiten der Abschnitte von timeline_build() in ms, für den Server-Timing-Header. */
+function timeline_timing(?string $section = null): array
+{
+    static $marks = [];
+    static $last = null;
+    $now = microtime(true);
+    if ($section !== null && $last !== null) {
+        $marks[$section] = round(($now - $last) * 1000, 1);
+    }
+    $last = $now;
+    return $marks;
+}
 
 function timeline_ts_ms(?string $utc): ?int
 {
@@ -145,13 +164,14 @@ function timeline_range_from_query(array $query): array
  */
 function timeline_build(array $device, DateTime $from, DateTime $to, ?int $hours = null): array
 {
+    timeline_timing();
     $deviceId = (string) $device['id'];
     $since = $from->format('Y-m-d H:i:s');
     $until = $to->format('Y-m-d H:i:s');
     $pdo = db();
 
     // Ziel-SSIDs: laut Gerätekonfiguration und alle, die im Zeitraum getestet wurden.
-    $config = json_decode((string) ($device['config'] ?? ''), true);
+    $config = device_effective_config($device) ?? [];
     $targets = [];
     foreach ((array) ($config['connection_tests']['targets'] ?? []) as $t) {
         if (is_array($t) && ($t['ssid'] ?? '') !== '') {
@@ -232,6 +252,7 @@ function timeline_build(array $device, DateTime $from, DateTime $to, ?int $hours
         }
     }
 
+    timeline_timing('tests');
     // --- BSS Load je eigenem AP-Radio aus den Scans (ggf. ausgedünnt) ---
     $cnt = $pdo->prepare("SELECT COUNT(*) FROM measurements WHERE device_id = ? AND kind = 'scan' AND received_at >= ? AND received_at <= ?");
     $cnt->execute([$deviceId, $since, $until]);
@@ -276,6 +297,7 @@ function timeline_build(array $device, DateTime $from, DateTime $to, ?int $hours
         }
     }
 
+    timeline_timing('scans');
     // Eigene Kanalmessung der Probe dazu - auch für Radios ohne BSS Load
     // (AP sendet kein QBSS), dann ist sie die einzige Quelle.
     foreach ($probeLoad as $key => $pl) {
@@ -312,6 +334,7 @@ function timeline_build(array $device, DateTime $from, DateTime $to, ?int $hours
         }
     }
 
+    timeline_timing('cirrus');
     foreach ($util as $key => $u) {
         if ($u['ap'] === null) {
             $util[$key]['label'] = timeline_label_unknown_ap(array_keys($ssidsByRadio[$key] ?? []), (string) $u['bssid'], (string) $u['band']);

@@ -45,9 +45,29 @@ require_once __DIR__ . '/src/Alerting.php';
 require_once __DIR__ . '/src/Site.php';
 require_once __DIR__ . '/src/I18n.php';
 require_once __DIR__ . '/src/ProbeError.php';
+require_once __DIR__ . '/src/Profile.php';
 
 /** Mindestzahl Fehlschlaege fuer die Regel eap_abort_rate. */
 const EAP_ABORT_MIN_FAILURES = 3;
+
+/**
+ * SSIDs, die das Gerät laut wirksamer Konfiguration testet (als Set), oder null
+ * ohne zentrale Konfiguration - dann weiß das Dashboard nicht, was die Probe testet.
+ */
+function configured_ssids(array $device): ?array
+{
+    $config = device_effective_config($device);
+    if ($config === null || !isset($config['connection_tests']['targets'])) {
+        return null;
+    }
+    $set = [];
+    foreach ((array) $config['connection_tests']['targets'] as $t) {
+        if (is_array($t) && (string) ($t['ssid'] ?? '') !== '') {
+            $set[(string) $t['ssid']] = true;
+        }
+    }
+    return $set;
+}
 
 function log_line(string $msg): void
 {
@@ -187,6 +207,29 @@ foreach (device_list() as $device) {
         }
     }
 
+    // Nur SSIDs, die laut wirksamer Konfiguration (Profil oder eigene) noch
+    // getestet werden. Wurde eine SSID entfernt, blieben ihre letzten Tests
+    // sonst ewig "fehlgeschlagen" in der Historie - der Alarm ging nie weg.
+    // Offene Alarme zu solchen SSIDs still schließen (keine Entwarnung - die
+    // SSID wurde ja nicht repariert, sondern abbestellt). Ohne zentrale
+    // Konfiguration (Probe nur mit lokaler config.yaml) bleibt alles wie bisher.
+    $configured = configured_ssids($device);
+    if ($configured !== null) {
+        $bySsid = array_intersect_key($bySsid, $configured);
+        $authBySsid = array_intersect_key($authBySsid, $configured);
+        foreach (['ssid_failing:', 'auth_slow:', 'eap_abort_rate:'] as $prefix) {
+            foreach (alert_active_rules_with_prefix($deviceId, $prefix) as $openRule) {
+                if (!isset($configured[substr($openRule, strlen($prefix))])) {
+                    $open = alert_find_active($deviceId, $openRule);
+                    if ($open !== null) {
+                        alert_resolve((int) $open['id']);
+                        log_line("GESCHLOSSEN (SSID nicht mehr konfiguriert): $deviceId / $openRule");
+                    }
+                }
+            }
+        }
+    }
+
     foreach ($bySsid as $ssid => $results) {
         // $results[0] ist der NEUESTE Test (measurement_list liefert DESC),
         // $results[1.. ] jeweils aeltere. Zwei eindeutige Faelle:
@@ -284,7 +327,7 @@ foreach (device_list() as $device) {
         foreach (measurement_list_since($deviceId, 'connection_test', $since) as $t) {
             $data = json_decode((string) $t['data'], true) ?: [];
             $isEap = !empty($data['eap_method']) || stripos((string) ($data['security'] ?? ''), 'eap') !== false;
-            if ($isEap && isset($data['ssid'])) {
+            if ($isEap && isset($data['ssid']) && ($configured === null || isset($configured[(string) $data['ssid']]))) {
                 $eapTests[(string) $data['ssid']][] = $data;
             }
         }

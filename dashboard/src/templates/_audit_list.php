@@ -38,6 +38,10 @@ $auditObjectLink = static function (array $row): string {
             $labels = ['alerting' => ['/settings/alerting', __('Zugangsdaten für die Alarmierung')], 'retention' => ['/settings/retention', __('Datenhaltung')]];
             [$href, $label] = $labels[$id] ?? ['#', $id];
             return '<a href="' . e($href) . '"><i class="fa-solid fa-gear"></i> ' . e($label) . '</a>';
+        case 'ssid':
+            return '<a href="/ssids/' . (int) $id . '"><i class="fa-solid fa-wifi"></i> ' . te('SSID #%d', (int) $id) . '</a>';
+        case 'profile':
+            return '<a href="/profiles/' . (int) $id . '"><i class="fa-solid fa-layer-group"></i> ' . te('Profil #%d', (int) $id) . '</a>';
         case 'system':
             return '<i class="fa-solid fa-lock"></i> ' . te('System');
         default:

@@ -201,7 +201,15 @@ status_overview() {
     echo "Auto-update:    $(cfg auto_update.enabled false) (branch $(cfg auto_update.branch '?'))"
     echo "Services:       probe $(svc_state "$SVC"), update timer $(svc_state "$UPD.timer"), watchdog timer $(svc_state "$WDG.timer")"
     if [ -f "$STATE_FILE" ]; then
-        echo "Last update:    $("$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); print(s.get("last_run_at","?"), "-", s.get("result","?"), "-", (s.get("message") or "")[:90])' "$STATE_FILE" 2>/dev/null)"
+        echo "Last update:    $("$PY" -c '
+import json, sys
+from datetime import datetime
+s = json.load(open(sys.argv[1]))
+try:
+    at = datetime.fromisoformat(s["run_at"]).astimezone().strftime("%Y-%m-%d %H:%M")
+except (KeyError, TypeError, ValueError):
+    at = "?"
+print(at, "-", s.get("result", "?"), "-", (s.get("message") or "")[:90])' "$STATE_FILE" 2>/dev/null)"
     fi
     echo "Wi-Fi:          $IFACE, MAC $(cat "/sys/class/net/$IFACE/address" 2>/dev/null || echo '?'), country $(iw reg get 2>/dev/null | awk '/^country/ {print $2; exit}' | tr -d :)"
     echo "IP addresses:   $(ip -4 -br addr show 2>/dev/null | awk '$1 != "lo" {printf "%s %s  ", $1, $3}')"
