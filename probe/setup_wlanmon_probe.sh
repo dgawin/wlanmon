@@ -351,7 +351,7 @@ fi
 # Die Probe prueft das zusaetzlich bei jedem Start (wifi_ops.py).
 ensure_networkmanager_ignores_test_iface() {
     systemctl is-active --quiet NetworkManager 2>/dev/null || return 0
-    local iface conf state
+    local iface conf state existing
     iface=$("$VENV_DIR/bin/python3" -c 'import sys, yaml; print(((yaml.safe_load(open(sys.argv[1])) or {}).get("interface") or {}).get("name") or "wlan0")' "$CONFIG_DIR/config.yaml" 2>/dev/null || echo wlan0)
     state=$(nmcli -t -f DEVICE,STATE device status 2>/dev/null | awk -F: -v d="$iface" '$1 == d {print $2}') || true
     if [ "$state" = "connected" ]; then
@@ -359,12 +359,16 @@ ensure_networkmanager_ignores_test_iface() {
         return 0
     fi
     conf=/etc/NetworkManager/conf.d/99-wlanmon.conf
-    if grep -qx "unmanaged-devices=interface-name:$iface" "$conf" 2>/dev/null; then
+    # Bereits eingetragene Interfaces bleiben drin (z.B. der Onboard-Chip,
+    # wenn die Tests auf einen USB-Stick umgezogen sind) - config_wizard.py
+    # pflegt dieselbe Liste.
+    existing=$(sed -n 's/^unmanaged-devices=//p' "$conf" 2>/dev/null | head -n 1)
+    if printf ';%s;' "$existing" | grep -q ";interface-name:$iface;"; then
         log "NetworkManager already leaves $iface alone."
         return 0
     fi
     mkdir -p /etc/NetworkManager/conf.d
-    printf '# WLANMON: test interface is controlled by the probe (setup_wlanmon_probe.sh)\n[keyfile]\nunmanaged-devices=interface-name:%s\n' "$iface" > "$conf"
+    printf '# WLANMON: test interface is controlled by the probe (setup_wlanmon_probe.sh)\n[keyfile]\nunmanaged-devices=%s\n' "${existing:+$existing;}interface-name:$iface" > "$conf"
     nmcli general reload conf >/dev/null 2>&1 || systemctl reload NetworkManager || true
     log "NetworkManager no longer manages $iface ($conf)."
 }

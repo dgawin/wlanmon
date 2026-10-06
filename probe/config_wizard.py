@@ -22,6 +22,7 @@ import re
 import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -172,6 +173,46 @@ def default_route_interface() -> str | None:
     except OSError:
         pass
     return None
+
+
+NM_CONF = Path("/etc/NetworkManager/conf.d/99-wlanmon.conf")
+
+
+def keep_networkmanager_off(iface: str) -> None:
+    """Tell NetworkManager (Raspberry Pi OS) permanently to leave the test
+    interface alone - same as setup_wlanmon_probe.sh, but needed here too:
+    switching from the onboard chip to a USB stick only via the wizard left
+    the new interface managed, and after a reboot NM could grab it before the
+    probe releases it. Interfaces already listed stay listed (an unused
+    onboard chip should not start connecting on its own either)."""
+    if not iface or not shutil.which("nmcli"):
+        return
+    if subprocess.run(["systemctl", "is-active", "--quiet", "NetworkManager"]).returncode != 0:
+        return
+    status = subprocess.run(["nmcli", "-t", "-f", "DEVICE,STATE", "device", "status"],
+                            capture_output=True, text=True)
+    for line in status.stdout.splitlines():
+        device, _, state = line.partition(":")
+        if device == iface and (state == "connected" or state.startswith("connecting")):
+            say(f"  {YEL}{iface} is connected in NetworkManager (uplink?) - left as it is.{RST} "
+                "The tests need an interface of their own.")
+            return
+    entries: list[str] = []
+    try:
+        for line in NM_CONF.read_text(encoding="utf-8").splitlines():
+            if line.startswith("unmanaged-devices="):
+                entries = [e for e in line.split("=", 1)[1].split(";") if e]
+    except OSError:
+        pass
+    entry = f"interface-name:{iface}"
+    if entry not in entries:
+        entries.append(entry)
+        NM_CONF.parent.mkdir(parents=True, exist_ok=True)
+        NM_CONF.write_text("# WLANMON: test interface is controlled by the probe (setup_wlanmon_probe.sh)\n"
+                           f"[keyfile]\nunmanaged-devices={';'.join(entries)}\n", encoding="utf-8")
+        subprocess.run(["nmcli", "general", "reload", "conf"], capture_output=True)
+        say(f"  NetworkManager no longer manages {iface} ({NM_CONF}).")
+    subprocess.run(["nmcli", "device", "set", iface, "managed", "no"], capture_output=True)
 
 
 # --- Connection test -----------------------------------------------------------
@@ -475,6 +516,7 @@ def run(path: Path) -> int:
             say("Nothing changed.")
             return 1
 
+    keep_networkmanager_off(str(answers["interface.name"]))
     old_text = path.read_text(encoding="utf-8")
     lines = old_text.splitlines(keepends=True)
     for key, value in answers.items():

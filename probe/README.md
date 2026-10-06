@@ -29,6 +29,8 @@ supported Wi-Fi adapter will most likely work too.
 | Board | Operating system | Wi-Fi for the tests | Bands | Notes |
 |---|---|---|---|---|
 | Raspberry Pi 5 (1 GB) | Raspberry Pi OS (Trixie) | Built-in (Broadcom, `brcmfmac`) | 2.4 / 5 GHz, Wi-Fi 5 | Tested with the Waveshare PoE HAT (G). It cannot tell the Pi that it delivers 5 A, so set `PSU_MAX_CURRENT=5000` with `sudo rpi-eeprom-config --edit` – otherwise the Pi limits its USB ports to 600 mA (matters with a USB Wi-Fi adapter). |
+| Raspberry Pi 5 (1 GB) | Raspberry Pi OS (Trixie) | USB: TP-Link Archer T3U Plus (AC1300, Realtek RTL8812BU, `rtw88_8822bu`) | 2.4 / 5 GHz, Wi-Fi 5 | WPA2, WPA3 and 802.1X work; iperf3 about 215 Mbit/s up and 135 Mbit/s down at a 400 Mbit/s link. Scanning takes about 9 s instead of 3 s with the built-in chip, so association times look longer. Needs kernel 6.2 or newer. |
+| Raspberry Pi 4 (1 GB) | Raspberry Pi OS | Built-in (Broadcom, `brcmfmac`) | 2.4 / 5 GHz, Wi-Fi 5 | WPA2, WPA3 and 802.1X work. |
 | Raspberry Pi 3 B | Raspberry Pi OS | USB: Comfast CF-951AX (internal antennas, MediaTek MT7921AU, `mt7921u`) | 2.4 / 5 / 6 GHz, Wi-Fi 6 | Runs. USB 2.0 and 100 Mbit/s Ethernet limit the measurable throughput (the LAN test tops out at about 94 Mbit/s). |
 | Raspberry Pi 3 B | Raspberry Pi OS | Built-in (Broadcom, `brcmfmac`) | 2.4 GHz only | Works, but cannot test 5 GHz networks – add a USB adapter for 5 and 6 GHz. |
 | NanoPi NEO2 (Allwinner H5, 512 MB) | Armbian Trixie (minimal) | USB: Comfast CF-953AX (MediaTek MT7921AU, `mt7921u`) | 2.4 / 5 / 6 GHz, Wi-Fi 6 | Reference platform. WPA2, WPA3 and 802.1X, captive portal login, capture of failed tests. NanoHat OLED with buttons supported. PoE via splitter works (the board cannot detect it). |
